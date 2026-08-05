@@ -51,7 +51,7 @@ Before publishing, replace the placeholder project URL in `TruthOrDare/TruthOrDa
 1. Launch the game through XIVLauncher.
 2. Open Dalamud Settings with `/xlsettings`.
 3. Enable plugin development/testing options if needed.
-4. Under **Experimental → Dev Plugin Locations**, add the full path to the built `Levemetes.dll` (or its containing output directory).
+4. Under **Experimental → Dev Plugin Locations**, add the full path to the built https://raw.githubusercontent.com/kaerlath/Levemetes/main/repo.json.
 5. Open `/xlplugins`, find the plugin under developer plugins, and enable it.
 6. Use `/levemetes` to open the window. The plugin installer’s main/configuration buttons also open it.
 
