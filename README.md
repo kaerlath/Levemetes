@@ -16,7 +16,8 @@ A small, fully local challenge-card game for Final Fantasy XIV. It uses native D
 - Add, edit, and delete cards in game.
 - Create, rename, switch between, and delete multiple decks.
 - Automatic local JSON persistence with a starter deck on first launch.
-- Import and export portable JSON deck files using a file path.
+- Import portable JSON decks with a file browser, either as a new deck or merged into an existing deck with duplicates skipped.
+- Export portable JSON deck files to a chosen path.
 - Input limits, format-version checks, duplicate-ID repair, safe replacement saves, delete confirmations, and visible error messages.
 
 Draw state is session-only. Deck contents persist, but the draw pile resets when the plugin reloads or a deck changes.
@@ -59,7 +60,9 @@ After rebuilding, use Dalamud’s developer plugin reload control or restart the
 
 Live decks are stored under Dalamud’s per-plugin configuration folder in `decks/`. The exact path is displayed on the **Decks & Sharing** tab.
 
-For sharing, enter a JSON path and choose **Export Selected**. Send that exported file outside the game. Another player can enter its path and choose **Import as New Deck**. Imported decks receive a new internal ID, so they do not overwrite an existing deck.
+For sharing, enter a JSON path and choose **Export Selected**, then send that exported file outside the game. Another player can use **Import as New Deck...** and select it in the file browser. Imported decks receive a new internal ID, so they do not overwrite an existing deck.
+
+To combine decks, select the destination deck and choose **Merge into Selected...**. Cards that match an existing card's title, activity type, categories, optional keyword, and text are skipped; capitalization and extra whitespace do not create false differences. New cards are added with fresh internal IDs.
 
 Example deck format:
 

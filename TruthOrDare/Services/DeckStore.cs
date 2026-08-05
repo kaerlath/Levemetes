@@ -88,12 +88,59 @@ public sealed class DeckStore
 
     public Deck Import(string path)
     {
-        var fullPath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(path.Trim().Trim('"')));
-        if (!File.Exists(fullPath)) throw new FileNotFoundException("The selected JSON file does not exist.", fullPath);
-        var deck = Read(fullPath, preserveId: false);
+        var deck = ReadImport(path);
         Save(deck);
         return deck;
     }
+
+    public (int Added, int Skipped) Merge(string path, Deck destination)
+    {
+        var imported = ReadImport(path);
+        var existing = new HashSet<string>(destination.Cards.Select(CardFingerprint), StringComparer.Ordinal);
+        var additions = new List<Card>();
+        var skipped = 0;
+
+        foreach (var card in imported.Cards)
+        {
+            if (!existing.Add(CardFingerprint(card)))
+            {
+                skipped++;
+                continue;
+            }
+
+            card.Id = Guid.NewGuid();
+            additions.Add(card);
+        }
+
+        var merged = new Deck
+        {
+            FormatVersion = destination.FormatVersion,
+            Id = destination.Id,
+            Name = destination.Name,
+            Cards = [.. destination.Cards, .. additions],
+        };
+        Save(merged);
+        destination.Cards = merged.Cards;
+        return (additions.Count, skipped);
+    }
+
+    private Deck ReadImport(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) throw new InvalidOperationException("Choose a JSON deck file.");
+        var fullPath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(path.Trim().Trim('"')));
+        if (!File.Exists(fullPath)) throw new FileNotFoundException("The selected JSON file does not exist.", fullPath);
+        return Read(fullPath, preserveId: false);
+    }
+
+    private static string CardFingerprint(Card card) => string.Join('\u001f',
+        NormalizeForComparison(card.Title),
+        ((int)card.Activity).ToString(),
+        ((int)card.Category).ToString(),
+        card.Keyword?.ToString() ?? string.Empty,
+        NormalizeForComparison(card.Text));
+
+    private static string NormalizeForComparison(string value) =>
+        string.Join(' ', value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)).ToUpperInvariant();
 
     private Deck Read(string path, bool preserveId)
     {

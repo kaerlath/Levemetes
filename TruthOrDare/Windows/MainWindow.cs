@@ -7,6 +7,7 @@ using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Textures;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Windowing;
+using Dalamud.Interface.ImGuiFileDialog;
 using TruthOrDare.Models;
 using TruthOrDare.Services;
 
@@ -25,6 +26,7 @@ public sealed class MainWindow : Window, IDisposable
     private readonly string cardBackPath;
     private readonly string templateDirectory;
     private readonly GameSession session = new();
+    private readonly FileDialogManager fileDialogManager = new();
     private readonly List<Deck> decks;
     private Deck selectedDeck;
     private string status = string.Empty;
@@ -81,6 +83,7 @@ public sealed class MainWindow : Window, IDisposable
         }
         DrawStatus();
         DrawConfirmations();
+        fileDialogManager.Draw();
     }
 
     private void DrawDeckSelector()
@@ -287,11 +290,14 @@ public sealed class MainWindow : Window, IDisposable
         if (ImGui.Button("Delete Deck")) requestDeleteDeck = true;
         if (decks.Count <= 1) ImGui.EndDisabled();
         ImGui.Separator();
-        ImGui.TextWrapped("Import or export a portable JSON deck. Paths may be absolute or relative to the game process. Existing export files are replaced.");
-        ImGui.InputText("JSON path", ref transferPath, 1024);
-        if (ImGui.Button("Export Selected")) TryAction(() => SetStatus($"Exported to {store.Export(selectedDeck, transferPath)}"));
+        ImGui.TextWrapped("Import a portable JSON deck as a separate deck, or merge its new cards into the selected deck. Duplicate cards are skipped automatically.");
+        if (ImGui.Button("Import as New Deck...")) OpenImportDialog(merge: false);
         ImGui.SameLine();
-        if (ImGui.Button("Import as New Deck")) TryAction(ImportDeck);
+        if (ImGui.Button("Merge into Selected...")) OpenImportDialog(merge: true);
+        ImGui.Spacing();
+        ImGui.TextUnformatted("Export selected deck");
+        ImGui.InputText("JSON path##Export", ref transferPath, 1024);
+        if (ImGui.Button("Export Selected")) TryAction(() => SetStatus($"Exported to {store.Export(selectedDeck, transferPath)}"));
         ImGui.TextDisabled($"Your live deck files are stored in: {store.DecksDirectory}");
     }
 
@@ -399,6 +405,38 @@ public sealed class MainWindow : Window, IDisposable
             SelectDeck(deck);
             SetStatus("Deck created.");
         });
+    }
+
+    private void OpenImportDialog(bool merge)
+    {
+        var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+        fileDialogManager.OpenFileDialog(
+            merge ? $"Merge a deck into {selectedDeck.Name}" : "Import a Levemetes deck",
+            ".json",
+            (success, paths) =>
+            {
+                if (!success) return;
+                TryAction(() => ImportDeck(paths[0], merge));
+            },
+            1,
+            desktop,
+            true);
+    }
+
+    private void ImportDeck(string path, bool merge)
+    {
+        if (merge)
+        {
+            var result = store.Merge(path, selectedDeck);
+            session.Reset(selectedDeck, playCategory);
+            SetStatus($"Merged {result.Added} new card{(result.Added == 1 ? string.Empty : "s")} into selected deck; skipped {result.Skipped} duplicate{(result.Skipped == 1 ? string.Empty : "s")}.");
+            return;
+        }
+
+        var deck = store.Import(path);
+        decks.Add(deck);
+        SelectDeck(deck);
+        SetStatus($"Imported {deck.Name} as a new deck.");
     }
 
     private void ImportDeck()
