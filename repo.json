@@ -1,0 +1,18 @@
+[
+  {
+    "Author": "Lynnaes Krazikaz",
+    "Name": "Levemetes",
+    "InternalName": "Levemetes",
+    "AssemblyVersion": "1.0.0.0",
+    "Description": "Player-run levemetes card game for truth or dare shenanigans.  Categorized play with custom decks that can be created and shared between players!  Open with /levemetes",
+    "ApplicableVersion": "any",
+    "RepoUrl": "https://github.com/kaerlath/Levemetes",
+    "DalamudApiLevel": 15,
+    "Punchline": "Draw locally stored challenge cards in game.",
+    "IsHide": false,
+    "IsTestingExclusive": false,
+    "DownloadLinkInstall": "https://github.com/kaerlath/Levemetes/releases/download/1.0.0/Levemetes.zip",
+    "DownloadLinkUpdate": "https://github.com/kaerlath/Levemetes/releases/download/1.0.0/Levemetes.zip",
+    "LastUpdate": "1785901638"
+  }
+]

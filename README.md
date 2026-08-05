@@ -2,6 +2,8 @@
 
 A small, fully local challenge-card game for Final Fantasy XIV. It uses native Dalamud/ImGui UI, stores decks as readable JSON in the plugin configuration directory, and has no server, telemetry, or web app.
 
+The custom repository for this plugin can be found at https://raw.githubusercontent.com/kaerlath/Levemetes/main/repo.json
+
 ## Features
 
 - Assign one or more of SFW, Mixed, NSFW, and NSFW+ to each card, then choose a play category and draw without replacement from its filtered, shuffled pile.
@@ -50,7 +52,7 @@ Before publishing, replace the placeholder project URL in `TruthOrDare/TruthOrDa
 1. Launch the game through XIVLauncher.
 2. Open Dalamud Settings with `/xlsettings`.
 3. Enable plugin development/testing options if needed.
-4. Under **Experimental → Dev Plugin Locations**, add the full path to the built `Levemetes.dll` (or its containing output directory).
+4. Under **Experimental → Dev Plugin Locations**, add the full path to the built https://raw.githubusercontent.com/kaerlath/Levemetes/main/repo.json.
 5. Open `/xlplugins`, find the plugin under developer plugins, and enable it.
 6. Use `/levemetes` to open the window. The plugin installer’s main/configuration buttons also open it.
 
