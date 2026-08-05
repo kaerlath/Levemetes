@@ -11,8 +11,8 @@
     "Punchline": "Draw locally stored challenge cards in game.",
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/kaerlath/Levemetes/releases/download/v1.0.0/Levemetes.zip",
-    "DownloadLinkUpdate": "https://github.com/kaerlath/Levemetes/releases/download/v1.0.0/Levemetes.zip",
+    "DownloadLinkInstall": "https://github.com/kaerlath/Levemetes/releases/download/1.0.0/Levemetes.zip",
+    "DownloadLinkUpdate": "https://github.com/kaerlath/Levemetes/releases/download/1.0.0/Levemetes.zip",
     "LastUpdate": "1785901638"
   }
 ]
