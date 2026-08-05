@@ -2,6 +2,8 @@
 
 A small, fully local challenge-card game for Final Fantasy XIV. It uses native Dalamud/ImGui UI, stores decks as readable JSON in the plugin configuration directory, and has no server, telemetry, or web app.
 
+The custom repository for this plugin can be found at https://raw.githubusercontent.com/kaerlath/Levemetes/main/repo.json
+
 ## Features
 
 - Assign one or more of SFW, Mixed, NSFW, and NSFW+ to each card, then choose a play category and draw without replacement from its filtered, shuffled pile.
