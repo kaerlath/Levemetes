@@ -10,4 +10,5 @@ public sealed class Card
     public CardCategory Category { get; set; }
     public CardKeyword? Keyword { get; set; }
     public string Text { get; set; } = string.Empty;
+    public string FlavorText { get; set; } = string.Empty;
 }

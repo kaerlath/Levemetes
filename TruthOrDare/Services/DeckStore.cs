@@ -15,6 +15,7 @@ public sealed class DeckStore
     private const int MaxCardsPerDeck = 5000;
     private const int MaxNameLength = 80;
     private const int MaxCardLength = 1000;
+    private const int MaxFlavorTextLength = 240;
     private const int MaxTitleLength = 100;
     private readonly string decksDirectory;
     private readonly IPluginLog log;
@@ -137,7 +138,8 @@ public sealed class DeckStore
         ((int)card.Activity).ToString(),
         ((int)card.Category).ToString(),
         card.Keyword?.ToString() ?? string.Empty,
-        NormalizeForComparison(card.Text));
+        NormalizeForComparison(card.Text),
+        NormalizeForComparison(card.FlavorText));
 
     private static string NormalizeForComparison(string value) =>
         string.Join(' ', value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)).ToUpperInvariant();
@@ -163,6 +165,11 @@ public sealed class DeckStore
                 if (string.IsNullOrWhiteSpace(card.Title)) card.Title = "Untitled Levemete";
                 card.Activity = ActivityType.ActionSelf;
             }
+            deck.FormatVersion = Deck.CurrentFormatVersion;
+        }
+        if (sourceVersion < 5)
+        {
+            foreach (var card in deck.Cards ?? []) card.FlavorText ??= string.Empty;
             deck.FormatVersion = Deck.CurrentFormatVersion;
         }
         if (!preserveId) deck.Id = Guid.NewGuid();
@@ -193,6 +200,9 @@ public sealed class DeckStore
             card.Text = card.Text?.Trim() ?? string.Empty;
             if (card.Text.Length is 0 or > MaxCardLength) throw new InvalidDataException($"Card text must be 1-{MaxCardLength} characters.");
             if (StripFormatting(card.Text).Length == 0) throw new InvalidDataException("Card text cannot contain only formatting tags.");
+            card.FlavorText = card.FlavorText?.Trim() ?? string.Empty;
+            if (card.FlavorText.Length > MaxFlavorTextLength)
+                throw new InvalidDataException($"Flavor text may contain at most {MaxFlavorTextLength} characters.");
             const CardCategory allCategories = CardCategory.Sfw | CardCategory.Mixed | CardCategory.Nsfw | CardCategory.NsfwPlus;
             if (card.Category == CardCategory.None || (card.Category & ~allCategories) != 0)
                 throw new InvalidDataException("Every card needs at least one valid category.");

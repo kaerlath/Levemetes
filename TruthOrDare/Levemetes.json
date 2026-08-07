@@ -3,7 +3,7 @@
   "Name": "Levemetes",
   "Punchline": "Draw locally stored challenge cards in game.",
   "Description": "Player-run levemetes card game for truth or dare shenanigans.  Categorized play with custom decks that can be created and shared between players!  Open with /levemetes",
-  "RepoUrl": "https://github.com/kaerlath/Levemetes",
   "ApplicableVersion": "any",
+  "IconUrl": "https://raw.githubusercontent.com/kaerlath/Levemetes/main/images/icon.png",
   "Tags": [ "game", "cards", "offline", "levemetes" ]
 }

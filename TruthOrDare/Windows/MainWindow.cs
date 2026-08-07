@@ -19,6 +19,7 @@ public sealed class MainWindow : Window, IDisposable
 {
     private const int MaxCardText = 1000;
     private const int MaxCardTitle = 100;
+    private const int MaxFlavorText = 240;
     private const int MaxDeckName = 80;
     private static readonly CardCategory[] BasicCategories =
         [CardCategory.Sfw, CardCategory.Mixed, CardCategory.Nsfw, CardCategory.NsfwPlus];
@@ -40,6 +41,7 @@ public sealed class MainWindow : Window, IDisposable
     private string newDeckName = string.Empty;
     private string cardText = string.Empty;
     private string cardTitle = string.Empty;
+    private string flavorText = string.Empty;
     private CardCategory cardCategory;
     private ActivityType activityType;
     private CardCategory playCategory;
@@ -258,6 +260,10 @@ public sealed class MainWindow : Window, IDisposable
         if (ImGui.Button("Center Line")) AppendFormatting("c", "centered sentence");
         ImGui.TextDisabled("Formatting buttons insert editable text at the end. Styles can be combined by nesting their tags.");
         ImGui.InputTextMultiline("##CardText", ref cardText, MaxCardText + 1, new Vector2(-1, 85 * ImGuiHelpers.GlobalScale));
+        ImGui.TextUnformatted("Optional flavor text");
+        ImGui.TextDisabled("Shown separately at the bottom of the card. It is not included when card text is copied.");
+        ImGui.InputTextMultiline("##FlavorText", ref flavorText, MaxFlavorText + 1,
+            new Vector2(-1, 58 * ImGuiHelpers.GlobalScale));
         var visibleCardText = StripFormatting(cardText);
         var valid = cardCategory != CardCategory.None && !string.IsNullOrWhiteSpace(cardTitle) && cardTitle.Trim().Length <= MaxCardTitle
             && !string.IsNullOrWhiteSpace(visibleCardText) && cardText.Trim().Length <= MaxCardText;
@@ -287,6 +293,10 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.PushTextWrapPos(ImGui.GetWindowWidth() - 140 * ImGuiHelpers.GlobalScale);
                 ImGui.TextWrapped(card.Text);
                 ImGui.PopTextWrapPos();
+                if (!string.IsNullOrWhiteSpace(card.FlavorText))
+                {
+                    ImGui.TextColored(new Vector4(.62f, .55f, .44f, 1f), $"Flavor: {card.FlavorText}");
+                }
                 ImGui.PushID(card.Id.ToString());
                 if (ImGui.SmallButton("Edit")) BeginEdit(card);
                 ImGui.SameLine();
@@ -386,10 +396,12 @@ public sealed class MainWindow : Window, IDisposable
             card.Category = cardCategory;
             card.Keyword = cardKeyword;
             card.Text = text;
+            card.FlavorText = flavorText.Trim();
         }
         else selectedDeck.Cards.Add(new Card
         {
             Title = cardTitle.Trim(), Activity = activityType, Category = cardCategory, Keyword = cardKeyword, Text = text,
+            FlavorText = flavorText.Trim(),
         });
         SaveDeck(editingCardId is null ? "Card added." : "Card updated.");
         ClearEditor();
@@ -403,6 +415,7 @@ public sealed class MainWindow : Window, IDisposable
         cardCategory = card.Category;
         cardKeyword = card.Keyword;
         cardText = card.Text;
+        flavorText = card.FlavorText;
     }
 
     private void ClearEditor()
@@ -413,6 +426,7 @@ public sealed class MainWindow : Window, IDisposable
         cardCategory = CardCategory.Sfw;
         cardKeyword = null;
         cardText = string.Empty;
+        flavorText = string.Empty;
     }
 
     private void SaveDeck(string message) => TryAction(() =>
@@ -532,6 +546,8 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.PopStyleColor();
 
         DrawFormattedCardText(card.Text, cardSize, CardInkColor(card.Category));
+        if (!string.IsNullOrWhiteSpace(card.FlavorText))
+            DrawFlavorText(card.FlavorText, cardSize, CardInkColor(card.Category));
     }
 
     private IFontHandle CreateCardFont(float size, bool bold, bool italic)
@@ -560,8 +576,9 @@ public sealed class MainWindow : Window, IDisposable
         var lineHeight = 24f * ImGuiHelpers.GlobalScale;
         var lines = LayoutFormattedLines(text, contentWidth);
         var y = origin.Y;
+        var maximumLines = Math.Max(1, (int)MathF.Floor(cardSize.Y * 0.27f / lineHeight));
 
-        foreach (var line in lines)
+        foreach (var line in lines.Take(maximumLines))
         {
             var x = line.Centered ? origin.X + MathF.Max(0, (contentWidth - line.Width) / 2f) : origin.X;
             foreach (var token in line.Tokens)
@@ -576,6 +593,28 @@ public sealed class MainWindow : Window, IDisposable
                         new Vector2(x + token.Size.X, underlineY), ImGui.ColorConvertFloat4ToU32(color),
                         ImGuiHelpers.GlobalScale);
                 }
+                x += token.Size.X;
+            }
+            y += lineHeight;
+        }
+    }
+
+    private void DrawFlavorText(string text, Vector2 cardSize, Vector4 color)
+    {
+        var origin = ImGui.GetWindowPos() + new Vector2(cardSize.X * 0.11f, cardSize.Y * 0.84f);
+        var contentWidth = cardSize.X * 0.78f;
+        var lineHeight = 22f * ImGuiHelpers.GlobalScale;
+        var lines = LayoutFormattedLines($"[c][i]{text}[/i][/c]", contentWidth);
+        var y = origin.Y;
+
+        foreach (var line in lines.Take(3))
+        {
+            var x = origin.X + MathF.Max(0, (contentWidth - line.Width) / 2f);
+            foreach (var token in line.Tokens)
+            {
+                using var pushedFont = FontFor(token.Bold, token.Italic).Push();
+                ImGui.SetCursorScreenPos(new Vector2(x, y));
+                ImGui.TextColored(new Vector4(color.X, color.Y, color.Z, .82f), token.Text);
                 x += token.Size.X;
             }
             y += lineHeight;

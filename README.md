@@ -1,5 +1,7 @@
 # Levemetes for Dalamud
 
+![Levemetes icon](images/icon.png)
+
 A small, fully local challenge-card game for Final Fantasy XIV. It uses native Dalamud/ImGui UI, stores decks as readable JSON in the plugin configuration directory, and has no server, telemetry, or web app.
 
 ## Features
@@ -15,6 +17,7 @@ A small, fully local challenge-card game for Final Fantasy XIV. It uses native D
 - A clipboard button for copying a drawn card's text before optionally pasting it into chat.
 - Add, edit, and delete cards in game.
 - Format card text with bold, italic, underline, and individually centered lines, including combined styles.
+- Add optional flavor text that appears separately at the bottom of a drawn card.
 - Create, rename, switch between, and delete multiple decks.
 - Automatic local JSON persistence with a starter deck on first launch.
 - Import portable JSON decks with a file browser, either as a new deck or merged into an existing deck with duplicates skipped.
@@ -67,6 +70,8 @@ To combine decks, select the destination deck and choose **Merge into Selected..
 
 The card editor includes **Bold**, **Italic**, **Underline**, and **Center Line** buttons. Each button inserts a short editable example using `[b]`, `[i]`, `[u]`, or `[c]` tags. Replace the example words with the text you want formatted. Tags may be nested to combine styles. A `[c]...[/c]` section is centered independently without centering the rest of the card. The tags are rendered as formatting on the card and removed when **Copy Text of Card** is used.
 
+Each card may also have optional flavor text. Flavor text is displayed as a separate centered, italic section in the final two or three lines at the bottom of the card. **Copy Text of Card** copies only the playable card text and deliberately excludes the flavor text.
+
 Example deck format:
 
 ```json
@@ -95,7 +100,7 @@ Example deck format:
 }
 ```
 
-Deck names are limited to 80 characters, card text to 1,000 characters, and imported files to 5 MB / 5,000 cards. Import only files you trust and review their text before playing.
+Deck names are limited to 80 characters, card text to 1,000 characters, flavor text to 240 characters, and imported files to 5 MB / 5,000 cards. Import only files you trust and review their text before playing.
 
 ## Privacy and scope
 
