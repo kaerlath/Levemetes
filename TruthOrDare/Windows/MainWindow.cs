@@ -34,6 +34,7 @@ public sealed class MainWindow : Window, IDisposable
     private readonly IFontHandle cardBoldFont;
     private readonly IFontHandle cardItalicFont;
     private readonly IFontHandle cardBoldItalicFont;
+    private readonly IFontHandle flavorFont;
     private readonly List<Deck> decks;
     private Deck selectedDeck;
     private string status = string.Empty;
@@ -70,6 +71,7 @@ public sealed class MainWindow : Window, IDisposable
         cardBoldFont = CreateCardFont(cardFontSize, true, false);
         cardItalicFont = CreateCardFont(cardFontSize, false, true);
         cardBoldItalicFont = CreateCardFont(cardFontSize, true, true);
+        flavorFont = CreateCardFont(cardFontSize - 2f, false, true);
         playCategory = configuration.SelectedCategory;
         if (!BasicCategories.Contains(playCategory))
         {
@@ -87,6 +89,7 @@ public sealed class MainWindow : Window, IDisposable
         cardBoldFont.Dispose();
         cardItalicFont.Dispose();
         cardBoldItalicFont.Dispose();
+        flavorFont.Dispose();
     }
 
     public override void Draw()
@@ -576,7 +579,7 @@ public sealed class MainWindow : Window, IDisposable
         var lineHeight = 24f * ImGuiHelpers.GlobalScale;
         var lines = LayoutFormattedLines(text, contentWidth);
         var y = origin.Y;
-        var maximumLines = Math.Max(1, (int)MathF.Floor(cardSize.Y * 0.27f / lineHeight));
+        var maximumLines = Math.Max(1, (int)MathF.Floor(cardSize.Y * 0.23f / lineHeight));
 
         foreach (var line in lines.Take(maximumLines))
         {
@@ -601,10 +604,10 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawFlavorText(string text, Vector2 cardSize, Vector4 color)
     {
-        var origin = ImGui.GetWindowPos() + new Vector2(cardSize.X * 0.11f, cardSize.Y * 0.84f);
+        var origin = ImGui.GetWindowPos() + new Vector2(cardSize.X * 0.11f, cardSize.Y * 0.80f);
         var contentWidth = cardSize.X * 0.78f;
-        var lineHeight = 22f * ImGuiHelpers.GlobalScale;
-        var lines = LayoutFormattedLines($"[c][i]{text}[/i][/c]", contentWidth);
+        var lineHeight = 20f * ImGuiHelpers.GlobalScale;
+        var lines = LayoutFlavorLines(text, contentWidth);
         var y = origin.Y;
 
         foreach (var line in lines.Take(3))
@@ -612,13 +615,51 @@ public sealed class MainWindow : Window, IDisposable
             var x = origin.X + MathF.Max(0, (contentWidth - line.Width) / 2f);
             foreach (var token in line.Tokens)
             {
-                using var pushedFont = FontFor(token.Bold, token.Italic).Push();
+                using var pushedFont = flavorFont.Push();
                 ImGui.SetCursorScreenPos(new Vector2(x, y));
                 ImGui.TextColored(new Vector4(color.X, color.Y, color.Z, .82f), token.Text);
                 x += token.Size.X;
             }
             y += lineHeight;
         }
+    }
+
+    private List<FormattedLine> LayoutFlavorLines(string text, float maximumWidth)
+    {
+        var lines = new List<FormattedLine>();
+        var current = new FormattedLine(true);
+        lines.Add(current);
+
+        foreach (var chunk in System.Text.RegularExpressions.Regex.Split(text.Replace("\r", string.Empty), "(\\s+)"))
+        {
+            if (chunk.Length == 0) continue;
+            var parts = chunk.Split('\n');
+            for (var index = 0; index < parts.Length; index++)
+            {
+                if (index > 0)
+                {
+                    current = new FormattedLine(true);
+                    lines.Add(current);
+                }
+                if (chunk.Contains('\n') && string.IsNullOrWhiteSpace(parts[index])) continue;
+                var value = string.IsNullOrWhiteSpace(parts[index]) ? " " : parts[index];
+                if (value == " " && current.Tokens.Count == 0) continue;
+                using var pushedFont = flavorFont.Push();
+                var size = ImGui.CalcTextSize(value);
+                if (current.Tokens.Count > 0 && current.Width + size.X > maximumWidth)
+                {
+                    current = new FormattedLine(true);
+                    lines.Add(current);
+                    value = value.TrimStart();
+                    if (value.Length == 0) continue;
+                    size = ImGui.CalcTextSize(value);
+                }
+                current.Tokens.Add(new FormattedToken(value, false, true, false, size));
+                current.Width += size.X;
+            }
+        }
+
+        return lines;
     }
 
     private List<FormattedLine> LayoutFormattedLines(string text, float maximumWidth)
