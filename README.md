@@ -2,8 +2,6 @@
 
 A small, fully local challenge-card game for Final Fantasy XIV. It uses native Dalamud/ImGui UI, stores decks as readable JSON in the plugin configuration directory, and has no server, telemetry, or web app.
 
-The custom repository for this plugin can be found at https://raw.githubusercontent.com/kaerlath/Levemetes/main/repo.json
-
 ## Features
 
 - Assign one or more of SFW, Mixed, NSFW, and NSFW+ to each card, then choose a play category and draw without replacement from its filtered, shuffled pile.
@@ -16,6 +14,7 @@ The custom repository for this plugin can be found at https://raw.githubusercont
 - A concealed deck using the supplied celestial-tree card-back image until a card is drawn.
 - A clipboard button for copying a drawn card's text before optionally pasting it into chat.
 - Add, edit, and delete cards in game.
+- Format card text with bold, italic, underline, and individually centered lines, including combined styles.
 - Create, rename, switch between, and delete multiple decks.
 - Automatic local JSON persistence with a starter deck on first launch.
 - Import portable JSON decks with a file browser, either as a new deck or merged into an existing deck with duplicates skipped.
@@ -52,7 +51,7 @@ Before publishing, replace the placeholder project URL in `TruthOrDare/TruthOrDa
 1. Launch the game through XIVLauncher.
 2. Open Dalamud Settings with `/xlsettings`.
 3. Enable plugin development/testing options if needed.
-4. Under **Experimental → Dev Plugin Locations**, add the full path to the built https://raw.githubusercontent.com/kaerlath/Levemetes/main/repo.json.
+4. Under **Experimental → Dev Plugin Locations**, add the full path to the built `Levemetes.dll` (or its containing output directory).
 5. Open `/xlplugins`, find the plugin under developer plugins, and enable it.
 6. Use `/levemetes` to open the window. The plugin installer’s main/configuration buttons also open it.
 
@@ -65,6 +64,8 @@ Live decks are stored under Dalamud’s per-plugin configuration folder in `deck
 For sharing, enter a JSON path and choose **Export Selected**, then send that exported file outside the game. Another player can use **Import as New Deck...** and select it in the file browser. Imported decks receive a new internal ID, so they do not overwrite an existing deck.
 
 To combine decks, select the destination deck and choose **Merge into Selected...**. Cards that match an existing card's title, activity type, categories, optional keyword, and text are skipped; capitalization and extra whitespace do not create false differences. New cards are added with fresh internal IDs.
+
+The card editor includes **Bold**, **Italic**, **Underline**, and **Center Line** buttons. Each button inserts a short editable example using `[b]`, `[i]`, `[u]`, or `[c]` tags. Replace the example words with the text you want formatted. Tags may be nested to combine styles. A `[c]...[/c]` section is centered independently without centering the rest of the card. The tags are rendered as formatting on the card and removed when **Copy Text of Card** is used.
 
 Example deck format:
 

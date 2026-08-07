@@ -192,6 +192,7 @@ public sealed class DeckStore
             if (card.Title.Length is 0 or > MaxTitleLength) throw new InvalidDataException($"Card titles must be 1-{MaxTitleLength} characters.");
             card.Text = card.Text?.Trim() ?? string.Empty;
             if (card.Text.Length is 0 or > MaxCardLength) throw new InvalidDataException($"Card text must be 1-{MaxCardLength} characters.");
+            if (StripFormatting(card.Text).Length == 0) throw new InvalidDataException("Card text cannot contain only formatting tags.");
             const CardCategory allCategories = CardCategory.Sfw | CardCategory.Mixed | CardCategory.Nsfw | CardCategory.NsfwPlus;
             if (card.Category == CardCategory.None || (card.Category & ~allCategories) != 0)
                 throw new InvalidDataException("Every card needs at least one valid category.");
@@ -199,6 +200,17 @@ public sealed class DeckStore
             if (!Enum.IsDefined(card.Activity)) throw new InvalidDataException("A card has an unknown activity type.");
             if (card.Id == Guid.Empty || !ids.Add(card.Id)) card.Id = Guid.NewGuid();
         }
+    }
+
+    private static string StripFormatting(string text)
+    {
+        var result = text;
+        foreach (var tag in new[] { "b", "i", "u", "c" })
+        {
+            result = result.Replace($"[{tag}]", string.Empty, StringComparison.OrdinalIgnoreCase);
+            result = result.Replace($"[/{tag}]", string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+        return result.Trim();
     }
 
     private static Deck CreateStarterDeck() => new() { Name = "My First Deck", Cards = [] };

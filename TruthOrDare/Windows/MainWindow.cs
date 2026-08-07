@@ -8,6 +8,8 @@ using Dalamud.Interface.Textures;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Windowing;
 using Dalamud.Interface.ImGuiFileDialog;
+using Dalamud.Interface.GameFonts;
+using Dalamud.Interface.ManagedFontAtlas;
 using TruthOrDare.Models;
 using TruthOrDare.Services;
 
@@ -27,6 +29,10 @@ public sealed class MainWindow : Window, IDisposable
     private readonly string templateDirectory;
     private readonly GameSession session = new();
     private readonly FileDialogManager fileDialogManager = new();
+    private readonly IFontHandle cardFont;
+    private readonly IFontHandle cardBoldFont;
+    private readonly IFontHandle cardItalicFont;
+    private readonly IFontHandle cardBoldItalicFont;
     private readonly List<Deck> decks;
     private Deck selectedDeck;
     private string status = string.Empty;
@@ -57,6 +63,11 @@ public sealed class MainWindow : Window, IDisposable
         this.saveConfiguration = saveConfiguration;
         this.cardBackPath = cardBackPath;
         this.templateDirectory = templateDirectory;
+        const float cardFontSize = 19f;
+        cardFont = CreateCardFont(cardFontSize, false, false);
+        cardBoldFont = CreateCardFont(cardFontSize, true, false);
+        cardItalicFont = CreateCardFont(cardFontSize, false, true);
+        cardBoldItalicFont = CreateCardFont(cardFontSize, true, true);
         playCategory = configuration.SelectedCategory;
         if (!BasicCategories.Contains(playCategory))
         {
@@ -68,7 +79,13 @@ public sealed class MainWindow : Window, IDisposable
         SelectDeck(selectedDeck);
     }
 
-    public void Dispose() { }
+    public void Dispose()
+    {
+        cardFont.Dispose();
+        cardBoldFont.Dispose();
+        cardItalicFont.Dispose();
+        cardBoldItalicFont.Dispose();
+    }
 
     public override void Draw()
     {
@@ -171,7 +188,7 @@ public sealed class MainWindow : Window, IDisposable
         if (session.CurrentCard is null) ImGui.BeginDisabled();
         if (ImGui.Button("Copy Text of Card", copyButtonSize) && session.CurrentCard is Card cardToCopy)
         {
-            ImGui.SetClipboardText(cardToCopy.Text);
+            ImGui.SetClipboardText(StripFormatting(cardToCopy.Text));
             SetStatus("Card text copied to the clipboard.");
         }
         if (session.CurrentCard is null) ImGui.EndDisabled();
@@ -230,9 +247,20 @@ public sealed class MainWindow : Window, IDisposable
                 if (ImGui.Selectable(KeywordLabel(keyword), cardKeyword == keyword)) cardKeyword = keyword;
             ImGui.EndCombo();
         }
+        ImGui.TextUnformatted("Card text formatting");
+        ImGui.SameLine();
+        if (ImGui.Button("Bold")) AppendFormatting("b", "bold text");
+        ImGui.SameLine();
+        if (ImGui.Button("Italic")) AppendFormatting("i", "italic text");
+        ImGui.SameLine();
+        if (ImGui.Button("Underline")) AppendFormatting("u", "underlined text");
+        ImGui.SameLine();
+        if (ImGui.Button("Center Line")) AppendFormatting("c", "centered sentence");
+        ImGui.TextDisabled("Formatting buttons insert editable text at the end. Styles can be combined by nesting their tags.");
         ImGui.InputTextMultiline("##CardText", ref cardText, MaxCardText + 1, new Vector2(-1, 85 * ImGuiHelpers.GlobalScale));
+        var visibleCardText = StripFormatting(cardText);
         var valid = cardCategory != CardCategory.None && !string.IsNullOrWhiteSpace(cardTitle) && cardTitle.Trim().Length <= MaxCardTitle
-            && !string.IsNullOrWhiteSpace(cardText) && cardText.Trim().Length <= MaxCardText;
+            && !string.IsNullOrWhiteSpace(visibleCardText) && cardText.Trim().Length <= MaxCardText;
         if (!valid) ImGui.BeginDisabled();
         if (ImGui.Button(editingCardId is null ? "Add Card" : "Save Changes")) SaveCard();
         if (!valid) ImGui.EndDisabled();
@@ -503,15 +531,166 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SetWindowFontScale(1f);
         ImGui.PopStyleColor();
 
-        ImGui.SetCursorPos(new Vector2(cardSize.X * 0.09f, cardSize.Y * 0.55f));
-        ImGui.PushTextWrapPos(cardSize.X * 0.91f);
-        ImGui.PushStyleColor(ImGuiCol.Text, CardInkColor(card.Category));
-        var bodySize = ImGui.GetFontSize();
-        ImGui.SetWindowFontScale((bodySize + 2f * ImGuiHelpers.GlobalScale) / bodySize);
-        ImGui.TextWrapped(card.Text);
-        ImGui.SetWindowFontScale(1f);
-        ImGui.PopStyleColor();
-        ImGui.PopTextWrapPos();
+        DrawFormattedCardText(card.Text, cardSize, CardInkColor(card.Category));
+    }
+
+    private IFontHandle CreateCardFont(float size, bool bold, bool italic)
+    {
+        var style = new GameFontStyle(GameFontFamily.Axis, size) { Bold = bold, Italic = italic };
+        return Plugin.PluginInterface.UiBuilder.FontAtlas.NewGameFontHandle(style);
+    }
+
+    private void AppendFormatting(string tag, string placeholder)
+    {
+        var insertion = $"[{tag}]{placeholder}[/{tag}]";
+        if (cardText.Length > 0 && !char.IsWhiteSpace(cardText[^1])) insertion = " " + insertion;
+        if (cardText.Length + insertion.Length > MaxCardText)
+        {
+            SetStatus("The card text is too long to add formatting.", true);
+            return;
+        }
+        cardText += insertion;
+    }
+
+    private void DrawFormattedCardText(string text, Vector2 cardSize, Vector4 color)
+    {
+        var origin = ImGui.GetWindowPos() + new Vector2(cardSize.X * 0.09f, cardSize.Y * 0.55f);
+        var maxX = ImGui.GetWindowPos().X + cardSize.X * 0.91f;
+        var contentWidth = maxX - origin.X;
+        var lineHeight = 24f * ImGuiHelpers.GlobalScale;
+        var lines = LayoutFormattedLines(text, contentWidth);
+        var y = origin.Y;
+
+        foreach (var line in lines)
+        {
+            var x = line.Centered ? origin.X + MathF.Max(0, (contentWidth - line.Width) / 2f) : origin.X;
+            foreach (var token in line.Tokens)
+            {
+                using var pushedFont = FontFor(token.Bold, token.Italic).Push();
+                ImGui.SetCursorScreenPos(new Vector2(x, y));
+                ImGui.TextColored(color, token.Text);
+                if (token.Underline && token.Text.Trim().Length > 0)
+                {
+                    var underlineY = y + token.Size.Y + ImGuiHelpers.GlobalScale;
+                    ImGui.GetWindowDrawList().AddLine(new Vector2(x, underlineY),
+                        new Vector2(x + token.Size.X, underlineY), ImGui.ColorConvertFloat4ToU32(color),
+                        ImGuiHelpers.GlobalScale);
+                }
+                x += token.Size.X;
+            }
+            y += lineHeight;
+        }
+    }
+
+    private List<FormattedLine> LayoutFormattedLines(string text, float maximumWidth)
+    {
+        var lines = new List<FormattedLine>();
+        var current = new FormattedLine(false);
+        lines.Add(current);
+
+        foreach (var run in ParseFormatting(text))
+        {
+            if (current.Tokens.Count > 0 && current.Centered != run.Centered)
+            {
+                current = new FormattedLine(run.Centered);
+                lines.Add(current);
+            }
+            else current.Centered = run.Centered;
+
+            var chunks = System.Text.RegularExpressions.Regex.Split(run.Text.Replace("\r", string.Empty), "(\\s+)");
+            foreach (var chunk in chunks)
+            {
+                if (chunk.Length == 0) continue;
+                var newlineParts = chunk.Split('\n');
+                for (var index = 0; index < newlineParts.Length; index++)
+                {
+                    if (index > 0)
+                    {
+                        current = new FormattedLine(run.Centered);
+                        lines.Add(current);
+                    }
+
+                    if (chunk.Contains('\n') && string.IsNullOrWhiteSpace(newlineParts[index])) continue;
+                    var value = string.IsNullOrWhiteSpace(newlineParts[index]) ? " " : newlineParts[index];
+                    if (value == " " && current.Tokens.Count == 0) continue;
+                    using var pushedFont = FontFor(run.Bold, run.Italic).Push();
+                    var size = ImGui.CalcTextSize(value);
+                    if (current.Tokens.Count > 0 && current.Width + size.X > maximumWidth)
+                    {
+                        current = new FormattedLine(run.Centered);
+                        lines.Add(current);
+                        value = value.TrimStart();
+                        if (value.Length == 0) continue;
+                        size = ImGui.CalcTextSize(value);
+                    }
+                    current.Tokens.Add(new FormattedToken(value, run.Bold, run.Italic, run.Underline, size));
+                    current.Width += size.X;
+                }
+            }
+        }
+
+        return lines;
+    }
+
+    private IFontHandle FontFor(bool bold, bool italic) => (bold, italic) switch
+    {
+        (true, true) => cardBoldItalicFont,
+        (true, false) => cardBoldFont,
+        (false, true) => cardItalicFont,
+        _ => cardFont,
+    };
+
+    private static IEnumerable<FormattedRun> ParseFormatting(string text)
+    {
+        var bold = false;
+        var italic = false;
+        var underline = false;
+        var centered = false;
+        var start = 0;
+        for (var index = 0; index < text.Length; index++)
+        {
+            if (text[index] != '[') continue;
+            var close = text.IndexOf(']', index + 1);
+            if (close < 0) break;
+            var tag = text[(index + 1)..close].ToLowerInvariant();
+            if (tag is not ("b" or "/b" or "i" or "/i" or "u" or "/u" or "c" or "/c")) continue;
+            if (index > start) yield return new FormattedRun(text[start..index], bold, italic, underline, centered);
+            switch (tag)
+            {
+                case "b": bold = true; break;
+                case "/b": bold = false; break;
+                case "i": italic = true; break;
+                case "/i": italic = false; break;
+                case "u": underline = true; break;
+                case "/u": underline = false; break;
+                case "c": centered = true; break;
+                case "/c": centered = false; break;
+            }
+            index = close;
+            start = close + 1;
+        }
+        if (start < text.Length) yield return new FormattedRun(text[start..], bold, italic, underline, centered);
+    }
+
+    private static string StripFormatting(string text)
+    {
+        var result = text;
+        foreach (var tag in new[] { "b", "i", "u", "c" })
+        {
+            result = result.Replace($"[{tag}]", string.Empty, StringComparison.OrdinalIgnoreCase);
+            result = result.Replace($"[/{tag}]", string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+        return result;
+    }
+
+    private readonly record struct FormattedRun(string Text, bool Bold, bool Italic, bool Underline, bool Centered);
+    private readonly record struct FormattedToken(string Text, bool Bold, bool Italic, bool Underline, Vector2 Size);
+
+    private sealed class FormattedLine(bool centered)
+    {
+        public bool Centered { get; set; } = centered;
+        public float Width { get; set; }
+        public List<FormattedToken> Tokens { get; } = [];
     }
 
     private static void DrawCenteredOverlayText(string text, float y, float extraPoints, Vector4 color)
