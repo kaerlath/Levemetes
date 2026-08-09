@@ -2,7 +2,7 @@
 
 ![Levemetes icon](images/icon.png)
 
-A small, fully local challenge-card game for Final Fantasy XIV. It uses native Dalamud/ImGui UI, stores decks in the plugin configuration directory, and has no server, telemetry, or web app.
+A local-first challenge-card game for Final Fantasy XIV. It uses native Dalamud/ImGui UI, stores decks in the plugin configuration directory, and has no telemetry or web app. Local play remains the default; an optional experimental Direct Private Game mode connects trusted players without a Levemetes-hosted server.
 
 ## Features
 
@@ -27,9 +27,32 @@ A small, fully local challenge-card game for Final Fantasy XIV. It uses native D
 - Import portable `.levemetesdeck` bundles (or legacy JSON decks) with a file browser, either as a new deck or merged into an existing deck with duplicate cards and images skipped.
 - Export a deck and its custom artwork together as one shareable `.levemetesdeck` file.
 - Open the most recent export folder directly from the folder button beside the export control.
+- Optionally host or join an encrypted Direct Private Game for up to eight trusted players using a private invitation and automatic `Character Name @ Home World` labels.
+- Synchronize the host's locked deck and custom artwork once, then share ordered card-draw and reset events without repeatedly transferring card content.
 - Input limits, format-version checks, duplicate-ID repair, safe replacement saves, delete confirmations, and visible error messages.
 
 Draw state is session-only. Deck contents persist, but the draw pile resets when the plugin reloads or a deck changes.
+
+## Experimental Direct Private Game
+
+Direct Private Game is an optional peer-to-peer host mode under its own tab. The existing local game does not depend on it and remains available when the option is disabled or after leaving a room.
+
+To host:
+
+1. Select the deck and intensity category to use.
+2. Enable **Experimental Direct Private Game**.
+3. Confirm the automatically detected character name and home world, then enter the public IP address or DNS name guests will use and a listening port between 1024 and 65535.
+4. Choose **Create Direct Room** and allow the connection through Windows Firewall if prompted.
+5. Configure TCP port forwarding on the host's router when required.
+6. Copy the generated invitation and share it privately with trusted players.
+
+To join, enable the experimental option while logged in to a character, paste the full invitation, and choose **Join with Invitation**. Joining imports the host's synchronized deck and custom artwork into the guest's local deck collection. Everyone must use a compatible Levemetes version. Room lists show only each participant's locally detected character name and home world; Levemetes never displays peer IP addresses in the player list.
+
+The room supports at most eight players. The host owns the shuffled draw pile, resolves every draw request, and is the only player who can shuffle/reset. The synchronized deck and intensity category are locked until the room closes. There is no public room listing, automatic party discovery, host migration, NAT traversal, or relay fallback in this experimental version.
+
+Direct messages use a random invitation secret, per-connection derived keys, AES-GCM authenticated encryption, ordered frame counters, strict frame-size limits, and validated `.levemetesdeck` content. The invitation itself contains a secret key and must be treated like a password.
+
+**IP privacy warning:** direct networking cannot hide the addresses used to route the connection. Guests can see the host's IP address, and the host can see connecting guest addresses. Hashing protects deck integrity and duplicate detection; it does not anonymize IP addresses. Use Direct Private Game only with people you trust.
 
 ## Requirements
 
@@ -112,11 +135,11 @@ Deck names and optional author names are limited to 80 characters, card text to 
 
 ## Privacy and scope
 
-Everything happens on the local client. The plugin does not synchronize players, post to chat, read game state, or contact a network service. Players coordinate turns and share exported files themselves.
+Local mode does not contact a network service. Direct Private Game opens a host-controlled TCP listener or connects directly to the address in an invitation, transfers the locked deck to joining guests, and synchronizes character labels and game events. The interface does not show peer connection addresses, although direct participants can still discover them using operating-system networking tools. Levemetes does not provide a relay, account service, public lobby, telemetry system, or automatic chat posting.
 
 ## License
 
-MIT for the plugin source. The six activity templates are original generated placeholders and can be replaced later without changing deck data. The bundled `card-back.jpg` is the user-specified image from `eternalstarco.carrd.co`; confirm that you have permission to redistribute it before publishing the plugin. No Final Fantasy XIV visual assets are included.
+MIT for the plugin source. The six activity templates are generated placeholders and can be replaced later without changing deck data. The bundled card back and user-supplied artwork/screenshots remain subject to their respective creators' rights and applicable game-material usage rules; confirm redistribution permission before publishing them.
 
 ## Submission note
 

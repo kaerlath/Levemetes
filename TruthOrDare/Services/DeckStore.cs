@@ -10,7 +10,6 @@ using System.Security.Cryptography;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Dalamud.Plugin.Services;
 using TruthOrDare.Models;
 
 namespace TruthOrDare.Services;
@@ -31,18 +30,18 @@ public sealed class DeckStore
     private const int ArtworkHeight = 512;
     private readonly string decksDirectory;
     private readonly string artworkRoot;
-    private readonly IPluginLog log;
+    private readonly Action<Exception, string, string>? logWarning;
     private readonly JsonSerializerOptions jsonOptions = new()
     {
         WriteIndented = true,
         Converters = { new JsonStringEnumConverter() },
     };
 
-    public DeckStore(string configDirectory, IPluginLog log)
+    public DeckStore(string configDirectory, Action<Exception, string, string>? logWarning = null)
     {
         decksDirectory = Path.Combine(configDirectory, "decks");
         artworkRoot = Path.Combine(decksDirectory, "artwork");
-        this.log = log;
+        this.logWarning = logWarning;
     }
 
     public string DecksDirectory => decksDirectory;
@@ -54,7 +53,7 @@ public sealed class DeckStore
         foreach (var file in Directory.EnumerateFiles(decksDirectory, "*.json").Take(MaxDecks))
         {
             try { decks.Add(ReadJson(File.ReadAllBytes(file), preserveId: true)); }
-            catch (Exception ex) { log.Warning(ex, "Could not load deck {File}", file); }
+            catch (Exception ex) { logWarning?.Invoke(ex, "Could not load deck {File}", file); }
         }
         if (decks.Count == 0)
         {
@@ -120,12 +119,20 @@ public sealed class DeckStore
 
     public string Export(Deck deck, string requestedPath)
     {
-        Validate(deck, requireArtworkFiles: true);
         var path = NormalizeBundlePath(requestedPath);
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? throw new InvalidOperationException("Choose an export directory."));
         var temporary = path + ".tmp";
         if (File.Exists(temporary)) File.Delete(temporary);
-        using (var archive = ZipFile.Open(temporary, ZipArchiveMode.Create))
+        File.WriteAllBytes(temporary, ExportBundleBytes(deck));
+        File.Move(temporary, path, true);
+        return path;
+    }
+
+    public byte[] ExportBundleBytes(Deck deck)
+    {
+        Validate(deck, requireArtworkFiles: true);
+        using var memory = new MemoryStream();
+        using (var archive = new ZipArchive(memory, ZipArchiveMode.Create, leaveOpen: true))
         {
             var deckEntry = archive.CreateEntry("deck.json", CompressionLevel.Optimal);
             using (var stream = deckEntry.Open()) JsonSerializer.Serialize(stream, deck, jsonOptions);
@@ -137,8 +144,25 @@ public sealed class DeckStore
                 input.CopyTo(output);
             }
         }
-        File.Move(temporary, path, true);
-        return path;
+        if (memory.Length > MaxBundleBytes) throw new InvalidDataException("The deck bundle is larger than 100 MB.");
+        return memory.ToArray();
+    }
+
+    public Deck ImportBundleBytes(byte[] bundle)
+    {
+        if (bundle.Length is 0 || bundle.LongLength > MaxBundleBytes)
+            throw new InvalidDataException("The received deck bundle is empty or larger than 100 MB.");
+        Directory.CreateDirectory(decksDirectory);
+        var temporary = Path.Combine(decksDirectory, $"network-{Guid.NewGuid():N}.levemetesdeck");
+        try
+        {
+            File.WriteAllBytes(temporary, bundle);
+            return Import(temporary);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
     }
 
     public Deck Import(string path)
@@ -202,7 +226,8 @@ public sealed class DeckStore
             using var stream = entries[0].Open();
             using var memory = new MemoryStream();
             stream.CopyTo(memory);
-            var normalized = NormalizeImage(memory.ToArray());
+            var normalized = memory.ToArray();
+            ValidateStoredArtwork(normalized);
             if (!Hash(normalized).Equals(asset.Sha256, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException($"Custom artwork ‘{asset.Name}’ did not pass its integrity check.");
             images[asset.Id] = normalized;
@@ -342,6 +367,21 @@ public sealed class DeckStore
         catch (Exception ex) when (ex is ArgumentException or ExternalException or OutOfMemoryException)
         {
             throw new InvalidDataException("The selected file is not a readable PNG, JPEG, BMP, or GIF image.", ex);
+        }
+    }
+
+    private static void ValidateStoredArtwork(byte[] source)
+    {
+        try
+        {
+            using var input = new MemoryStream(source);
+            using var image = Image.FromStream(input, useEmbeddedColorManagement: true, validateImageData: true);
+            if (image.Width != ArtworkWidth || image.Height != ArtworkHeight || image.RawFormat.Guid != ImageFormat.Jpeg.Guid)
+                throw new InvalidDataException($"Bundled custom artwork must be a {ArtworkWidth}×{ArtworkHeight} JPEG image.");
+        }
+        catch (Exception ex) when (ex is ArgumentException or ExternalException or OutOfMemoryException)
+        {
+            throw new InvalidDataException("Bundled custom artwork is not a readable JPEG image.", ex);
         }
     }
 

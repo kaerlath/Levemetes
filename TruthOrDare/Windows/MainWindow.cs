@@ -28,6 +28,7 @@ public sealed class MainWindow : Window, IDisposable
         [CardCategory.Sfw, CardCategory.Mixed, CardCategory.Nsfw, CardCategory.NsfwPlus];
     private readonly Configuration configuration;
     private readonly DeckStore store;
+    private readonly DirectGameService directGame;
     private readonly Action<Configuration> saveConfiguration;
     private readonly string cardBackPath;
     private readonly string templateDirectory;
@@ -57,8 +58,13 @@ public sealed class MainWindow : Window, IDisposable
     private Guid? pendingDeleteCardId;
     private bool requestDeleteDeck;
     private string? lastExportPath;
+    private string directPublicAddress;
+    private int directPort;
+    private string directInvitation = string.Empty;
+    private Card? directCurrentCard;
+    private string directDrawer = string.Empty;
 
-    public MainWindow(Configuration configuration, DeckStore store, Action<Configuration> saveConfiguration,
+    public MainWindow(Configuration configuration, DeckStore store, DirectGameService directGame, Action<Configuration> saveConfiguration,
         string cardBackPath, string templateDirectory, string artworkDirectory)
         : base("Levemetes##LevemetesMain")
     {
@@ -69,10 +75,13 @@ public sealed class MainWindow : Window, IDisposable
         };
         this.configuration = configuration;
         this.store = store;
+        this.directGame = directGame;
         this.saveConfiguration = saveConfiguration;
         this.cardBackPath = cardBackPath;
         this.templateDirectory = templateDirectory;
         this.artworkDirectory = artworkDirectory;
+        directPublicAddress = configuration.DirectPublicAddress;
+        directPort = configuration.DirectPort;
         const float cardFontSize = 19f;
         cardFont = CreateCardFont(cardFontSize, false, false);
         cardBoldFont = CreateCardFont(cardFontSize, true, false);
@@ -101,6 +110,7 @@ public sealed class MainWindow : Window, IDisposable
 
     public override void Draw()
     {
+        ProcessDirectGameEvents();
         DrawDeckSelector();
         ImGui.Separator();
         if (ImGui.BeginTabBar("MainTabs"))
@@ -108,6 +118,7 @@ public sealed class MainWindow : Window, IDisposable
             if (ImGui.BeginTabItem("Play")) { DrawPlayTab(); ImGui.EndTabItem(); }
             if (ImGui.BeginTabItem("Cards")) { DrawCardsTab(); ImGui.EndTabItem(); }
             if (ImGui.BeginTabItem("Decks & Sharing")) { DrawDecksTab(); ImGui.EndTabItem(); }
+            if (ImGui.BeginTabItem("Direct Private Game")) { DrawDirectGameTab(); ImGui.EndTabItem(); }
             ImGui.EndTabBar();
         }
         DrawStatus();
@@ -121,6 +132,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.TextUnformatted("Deck");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(260 * ImGuiHelpers.GlobalScale);
+        if (directGame.IsConnected) ImGui.BeginDisabled();
         if (ImGui.BeginCombo("##Deck", selectedDeck.Name))
         {
             foreach (var deck in decks)
@@ -129,13 +141,14 @@ public sealed class MainWindow : Window, IDisposable
             }
             ImGui.EndCombo();
         }
+        if (directGame.IsConnected) ImGui.EndDisabled();
         ImGui.SameLine();
         if (!string.IsNullOrWhiteSpace(selectedDeck.Author))
         {
             ImGui.TextDisabled($"by {selectedDeck.Author}");
             ImGui.SameLine();
         }
-        ImGui.TextDisabled($"• {session.Remaining} remaining");
+        ImGui.TextDisabled($"• {(directGame.IsConnected ? directGame.Remaining : session.Remaining)} remaining");
     }
 
     private void DrawPlayTab()
@@ -145,6 +158,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.TextUnformatted("Intensity (Heat) Category");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(180 * ImGuiHelpers.GlobalScale);
+        if (directGame.IsConnected) ImGui.BeginDisabled();
         if (ImGui.BeginCombo("##PlayCategory", CategoryLabel(playCategory)))
         {
             foreach (var category in BasicCategories)
@@ -160,6 +174,7 @@ public sealed class MainWindow : Window, IDisposable
             }
             ImGui.EndCombo();
         }
+        if (directGame.IsConnected) ImGui.EndDisabled();
         var categoryCount = selectedDeck.Cards.Count(card => card.Category.HasFlag(playCategory));
         ImGui.SameLine();
         ImGui.TextDisabled($"{categoryCount} cards");
@@ -172,9 +187,10 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, Vector2.Zero);
         ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(0.72f, 0.59f, 0.27f, 1f));
         ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.08f, 0.07f, 0.12f, 0.98f));
+        var displayedCard = directGame.IsConnected ? directCurrentCard : session.CurrentCard;
         if (ImGui.BeginChild("CardFace", cardSize, true))
         {
-            if (session.CurrentCard is null)
+            if (displayedCard is null)
             {
                 var texture = Plugin.TextureProvider.GetFromFile(cardBackPath).GetWrapOrDefault();
                 if (texture is not null)
@@ -189,11 +205,11 @@ public sealed class MainWindow : Window, IDisposable
             }
             else
             {
-                DrawRevealedTemplate(session.CurrentCard, cardSize);
+                DrawRevealedTemplate(displayedCard, cardSize);
             }
         }
         ImGui.EndChild();
-        if (session.CurrentCard is null)
+        if (displayedCard is null)
             DrawSegmentedBorder(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), [new Vector4(0.72f, 0.59f, 0.27f, 1f)]);
         ImGui.PopStyleColor(2);
         ImGui.PopStyleVar(3);
@@ -202,16 +218,16 @@ public sealed class MainWindow : Window, IDisposable
         var copyButtonSize = new Vector2(190, 34) * ImGuiHelpers.GlobalScale;
         ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(),
             ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X - copyButtonSize.X) / 2));
-        if (session.CurrentCard is null) ImGui.BeginDisabled();
-        if (ImGui.Button("Copy Text of Card", copyButtonSize) && session.CurrentCard is Card cardToCopy)
+        if (displayedCard is null) ImGui.BeginDisabled();
+        if (ImGui.Button("Copy Text of Card", copyButtonSize) && displayedCard is Card cardToCopy)
         {
             ImGui.SetClipboardText(StripFormatting(cardToCopy.Text));
             SetStatus("Card text copied to the clipboard.");
         }
-        if (session.CurrentCard is null) ImGui.EndDisabled();
+        if (displayedCard is null) ImGui.EndDisabled();
 
         ImGui.Dummy(new Vector2(0, ImGui.GetTextLineHeightWithSpacing()));
-        var canDraw = categoryCount > 0 && session.Remaining > 0;
+        var canDraw = categoryCount > 0 && (directGame.IsConnected ? directGame.Remaining : session.Remaining) > 0;
         var buttonGap = 12 * ImGuiHelpers.GlobalScale;
         var availableWidth = ImGui.GetContentRegionAvail().X;
         var actionButtonWidth = MathF.Min(210 * ImGuiHelpers.GlobalScale, (availableWidth - buttonGap) / 2);
@@ -220,16 +236,32 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(),
             ImGui.GetCursorPosX() + (availableWidth - actionGroupWidth) / 2));
         if (!canDraw) ImGui.BeginDisabled();
-        if (ImGui.Button("Draw", actionButtonSize)) session.Draw(selectedDeck, playCategory);
+        if (ImGui.Button("Draw", actionButtonSize))
+        {
+            if (directGame.IsConnected) directGame.RequestDraw();
+            else session.Draw(selectedDeck, playCategory);
+        }
         if (!canDraw) ImGui.EndDisabled();
         ImGui.SameLine(0, buttonGap);
-        if (ImGui.Button("Shuffle / Reset", actionButtonSize)) { session.Reset(selectedDeck, playCategory); SetStatus("Draw pile shuffled."); }
-        if (categoryCount > 0 && session.Remaining == 0) ImGui.TextDisabled("No cards remain in this category. Shuffle / Reset to play again.");
+        if (directGame.IsConnected && !directGame.IsHost) ImGui.BeginDisabled();
+        if (ImGui.Button("Shuffle / Reset", actionButtonSize))
+        {
+            if (directGame.IsConnected) directGame.ResetSharedPile(selectedDeck);
+            else { session.Reset(selectedDeck, playCategory); SetStatus("Draw pile shuffled."); }
+        }
+        if (directGame.IsConnected && !directGame.IsHost) ImGui.EndDisabled();
+        if (categoryCount > 0 && (directGame.IsConnected ? directGame.Remaining : session.Remaining) == 0)
+            ImGui.TextDisabled(directGame.IsConnected && !directGame.IsHost ? "No shared cards remain. The host must shuffle and reset." : "No cards remain in this category. Shuffle / Reset to play again.");
     }
 
     private void DrawCardsTab()
     {
         ImGui.Spacing();
+        if (directGame.IsConnected)
+        {
+            ImGui.TextWrapped("The synchronized deck is locked while Direct Private Game is connected. Leave the room to edit cards.");
+            return;
+        }
         ImGui.TextUnformatted("Deck author");
         ImGui.SameLine();
         var editedAuthor = selectedDeck.Author;
@@ -408,6 +440,11 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawDecksTab()
     {
         ImGui.Spacing();
+        if (directGame.IsConnected)
+        {
+            ImGui.TextWrapped("Deck management and sharing are locked while Direct Private Game is connected. Leave the room to make changes.");
+            return;
+        }
         ImGui.TextUnformatted("Create deck");
         ImGui.SetNextItemWidth(300 * ImGuiHelpers.GlobalScale);
         ImGui.InputTextWithHint("##NewDeck", "Deck name", ref newDeckName, MaxDeckName + 1);
@@ -446,6 +483,193 @@ public sealed class MainWindow : Window, IDisposable
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
             ImGui.SetTooltip(lastExportPath is null ? "Export a deck first" : "Open the exported deck's folder");
         ImGui.TextDisabled($"Your live deck files are stored in: {store.DecksDirectory}");
+    }
+
+    private void DrawDirectGameTab()
+    {
+        ImGui.Spacing();
+        var enabled = configuration.EnableExperimentalDirectPlay;
+        if (directGame.IsConnected) ImGui.BeginDisabled();
+        if (ImGui.Checkbox("Enable Experimental Direct Private Game", ref enabled))
+        {
+            configuration.EnableExperimentalDirectPlay = enabled;
+            saveConfiguration(configuration);
+        }
+        if (directGame.IsConnected) ImGui.EndDisabled();
+        ImGui.TextColored(new Vector4(1f, .68f, .28f, 1f),
+            "Direct connections expose the host's IP address to guests and guest IP addresses to the host.");
+        ImGui.TextWrapped("Use this only with people you trust. Levemetes encrypts and authenticates game messages, but encryption cannot hide the addresses needed to make a direct connection.");
+        ImGui.Separator();
+
+        if (!enabled)
+        {
+            ImGui.TextDisabled("Enable the experimental option above to create or join a direct room. Local play is unchanged.");
+            return;
+        }
+
+        if (!directGame.IsConnected && directGame.Mode != DirectGameMode.Connecting)
+        {
+            var characterLabel = GetLocalCharacterLabel();
+            ImGui.TextUnformatted("Playing as");
+            ImGui.SameLine();
+            if (characterLabel is null)
+                ImGui.TextColored(new Vector4(1f, .35f, .35f, 1f), "Log in to a character to use Direct Private Game");
+            else
+                ImGui.TextColored(new Vector4(.45f, .9f, .55f, 1f), characterLabel);
+
+            ImGui.Spacing();
+            ImGui.TextUnformatted("Create a direct room");
+            ImGui.TextWrapped($"The currently selected deck and {CategoryLabel(playCategory)} draw pile will be locked and sent once to each joining player.");
+            ImGui.SetNextItemWidth(300 * ImGuiHelpers.GlobalScale);
+            ImGui.InputTextWithHint("Public address##DirectHost", "Public IP address or DNS name", ref directPublicAddress, 256);
+            ImGui.SetNextItemWidth(140 * ImGuiHelpers.GlobalScale);
+            ImGui.InputInt("Listening port##DirectPort", ref directPort);
+            if (characterLabel is null) ImGui.BeginDisabled();
+            if (ImGui.Button("Create Direct Room")) CreateDirectRoom(characterLabel!);
+            if (characterLabel is null) ImGui.EndDisabled();
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("May require Windows Firewall permission and router port forwarding.");
+
+            ImGui.Separator();
+            ImGui.TextUnformatted("Join a direct room");
+            ImGui.TextWrapped("Joining downloads the host's custom deck and artwork. Confirm that you trust the host and accept the room's possible content before joining.");
+            ImGui.InputTextMultiline("##DirectInvitation", ref directInvitation, 2048,
+                new Vector2(-1, 70 * ImGuiHelpers.GlobalScale));
+            if (characterLabel is null) ImGui.BeginDisabled();
+            if (ImGui.Button("Join with Invitation")) JoinDirectRoom(characterLabel!);
+            if (characterLabel is null) ImGui.EndDisabled();
+            return;
+        }
+
+        if (directGame.Mode == DirectGameMode.Connecting)
+        {
+            ImGui.TextUnformatted("Connecting to the direct host…");
+            if (ImGui.Button("Cancel Connection")) directGame.Stop();
+            return;
+        }
+
+        ImGui.TextColored(new Vector4(.45f, .9f, .55f, 1f),
+            directGame.IsHost ? "Hosting Direct Private Game" : "Connected to Direct Private Game");
+        ImGui.TextUnformatted($"Locked deck: {selectedDeck.Name}");
+        if (!string.IsNullOrWhiteSpace(selectedDeck.Author)) ImGui.TextDisabled($"by {selectedDeck.Author}");
+        ImGui.TextUnformatted($"Intensity: {CategoryLabel(directGame.Category)}");
+        ImGui.TextUnformatted($"Shared cards remaining: {directGame.Remaining}");
+
+        if (directGame.IsHost)
+        {
+            ImGui.Spacing();
+            ImGui.TextUnformatted("Private invitation");
+            var invite = directGame.InviteText;
+            ImGui.InputTextMultiline("##HostInvitation", ref invite, 2048,
+                new Vector2(-1, 70 * ImGuiHelpers.GlobalScale));
+            if (ImGui.Button("Copy Invitation"))
+            {
+                ImGui.SetClipboardText(directGame.InviteText);
+                SetStatus("Direct-room invitation copied. Share it only with trusted players.");
+            }
+            ImGui.TextDisabled("The invitation contains a secret connection key. Anyone who has it may attempt to join while the room is open.");
+        }
+
+        ImGui.Spacing();
+        ImGui.TextUnformatted($"Players ({directGame.Players.Count}/8)");
+        foreach (var name in directGame.Players)
+        {
+            ImGui.Bullet();
+            ImGui.SameLine();
+            ImGui.TextUnformatted(name);
+        }
+        if (!string.IsNullOrWhiteSpace(directDrawer)) ImGui.TextDisabled($"Most recent draw: {directDrawer}");
+        ImGui.Spacing();
+        if (ImGui.Button(directGame.IsHost ? "Close Room" : "Leave Room")) LeaveDirectRoom();
+    }
+
+    private void CreateDirectRoom(string characterLabel)
+    {
+        SaveDirectSettings();
+        TryAction(() =>
+        {
+            var bundle = store.ExportBundleBytes(selectedDeck);
+            directGame.StartHosting(characterLabel, directPublicAddress, directPort, selectedDeck, playCategory, bundle);
+            directCurrentCard = null;
+            directDrawer = string.Empty;
+            SetStatus("Direct room created. You may need to allow Levemetes through Windows Firewall and forward the listening port on your router.");
+        });
+    }
+
+    private void JoinDirectRoom(string characterLabel)
+    {
+        SaveDirectSettings();
+        TryAction(() => directGame.Join(characterLabel, directInvitation));
+    }
+
+    private void LeaveDirectRoom()
+    {
+        directGame.Stop();
+        directCurrentCard = null;
+        directDrawer = string.Empty;
+        session.Reset(selectedDeck, playCategory);
+        SetStatus("Direct Private Game ended. Local play is available again.");
+    }
+
+    private void SaveDirectSettings()
+    {
+        configuration.DirectPublicAddress = directPublicAddress.Trim();
+        configuration.DirectPort = directPort;
+        saveConfiguration(configuration);
+    }
+
+    private static string? GetLocalCharacterLabel()
+    {
+        if (!Plugin.PlayerState.IsLoaded) return null;
+        var characterName = Plugin.PlayerState.CharacterName.Trim();
+        var homeWorld = Plugin.PlayerState.HomeWorld.Value.Name.ToString().Trim();
+        if (string.IsNullOrWhiteSpace(characterName) || string.IsNullOrWhiteSpace(homeWorld)) return null;
+        return $"{characterName} @ {homeWorld}";
+    }
+
+    private void ProcessDirectGameEvents()
+    {
+        while (directGame.TryDequeue(out var gameEvent))
+        {
+            try
+            {
+                switch (gameEvent.Type)
+                {
+                    case DirectGameEventType.DeckReceived:
+                        if (gameEvent.Bundle is null) throw new InvalidDataException("The host sent an empty deck bundle.");
+                        var synchronizedDeck = store.ImportBundleBytes(gameEvent.Bundle);
+                        decks.Add(synchronizedDeck);
+                        playCategory = gameEvent.Category;
+                        configuration.SelectedCategory = playCategory;
+                        SelectDeck(synchronizedDeck);
+                        directCurrentCard = null;
+                        SetStatus($"Synchronized host deck “{synchronizedDeck.Name}” and joined Direct Private Game.");
+                        break;
+                    case DirectGameEventType.CardDrawn:
+                        directCurrentCard = selectedDeck.Cards.FirstOrDefault(card => card.Id == gameEvent.CardId)
+                            ?? throw new InvalidDataException("The shared draw referred to a card that is missing from the synchronized deck.");
+                        directDrawer = gameEvent.Drawer ?? "A player";
+                        SetStatus(gameEvent.Message);
+                        break;
+                    case DirectGameEventType.Reset:
+                        directCurrentCard = null;
+                        directDrawer = string.Empty;
+                        SetStatus(gameEvent.Message);
+                        break;
+                    case DirectGameEventType.Error:
+                        SetStatus(gameEvent.Message, true);
+                        break;
+                    case DirectGameEventType.Status:
+                        SetStatus(gameEvent.Message);
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.Error(ex, "Could not process a Direct Private Game event");
+                SetStatus(ex.Message, true);
+                directGame.Stop();
+            }
+        }
     }
 
     private void DrawStatus()

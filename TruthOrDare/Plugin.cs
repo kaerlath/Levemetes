@@ -18,18 +18,22 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
+    [PluginService] internal static IPlayerState PlayerState { get; private set; } = null!;
 
     private readonly WindowSystem windowSystem = new("Levemetes");
     private readonly MainWindow mainWindow;
+    private readonly DirectGameService directGame;
 
     public Plugin()
     {
         var configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
-        var store = new DeckStore(PluginInterface.GetPluginConfigDirectory(), Log);
+        var store = new DeckStore(PluginInterface.GetPluginConfigDirectory(),
+            (exception, message, file) => Log.Warning(exception, message, file));
+        directGame = new DirectGameService((exception, message) => Log.Warning(exception, message));
         var cardBackPath = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "card-back.jpg");
         var templateDirectory = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "Assets", "Templates");
         var artworkDirectory = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "Assets", "Artwork");
-        mainWindow = new MainWindow(configuration, store, SaveConfiguration, cardBackPath, templateDirectory, artworkDirectory);
+        mainWindow = new MainWindow(configuration, store, directGame, SaveConfiguration, cardBackPath, templateDirectory, artworkDirectory);
         windowSystem.AddWindow(mainWindow);
 
         CommandManager.AddHandler(Command, new CommandInfo(OnCommand) { HelpMessage = "Open Levemetes." });
@@ -46,6 +50,7 @@ public sealed class Plugin : IDalamudPlugin
         CommandManager.RemoveHandler(Command);
         windowSystem.RemoveAllWindows();
         mainWindow.Dispose();
+        directGame.Dispose();
     }
 
     private static void SaveConfiguration(Configuration configuration) => PluginInterface.SavePluginConfig(configuration);
