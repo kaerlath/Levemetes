@@ -136,6 +136,7 @@ public sealed class DeckStore
     private static string CardFingerprint(Card card) => string.Join('\u001f',
         NormalizeForComparison(card.Title),
         ((int)card.Activity).ToString(),
+        ((int)card.Artwork).ToString(),
         ((int)card.Category).ToString(),
         card.Keyword?.ToString() ?? string.Empty,
         NormalizeForComparison(card.Text),
@@ -170,6 +171,20 @@ public sealed class DeckStore
         if (sourceVersion < 5)
         {
             foreach (var card in deck.Cards ?? []) card.FlavorText ??= string.Empty;
+            deck.FormatVersion = Deck.CurrentFormatVersion;
+        }
+        if (sourceVersion < 6)
+        {
+            foreach (var card in deck.Cards ?? []) card.Artwork = card.Activity switch
+            {
+                ActivityType.ActionSelf => ArtworkChoice.SfwAdventurersResolve,
+                ActivityType.ActionOtherVolunteer => ArtworkChoice.SfwFiresideFellowship,
+                ActivityType.ActionChoice => ArtworkChoice.SfwScholarsReflection,
+                ActivityType.ActionRandom => ArtworkChoice.SfwStarlitJourney,
+                ActivityType.RevelationThought => ArtworkChoice.SfwFestivalSpirit,
+                ActivityType.RevelationExperience => ArtworkChoice.SfwGardenSanctuary,
+                _ => ArtworkChoice.SfwAdventurersResolve,
+            };
             deck.FormatVersion = Deck.CurrentFormatVersion;
         }
         if (!preserveId) deck.Id = Guid.NewGuid();
@@ -208,6 +223,7 @@ public sealed class DeckStore
                 throw new InvalidDataException("Every card needs at least one valid category.");
             if (card.Keyword is not null && !Enum.IsDefined(card.Keyword.Value)) throw new InvalidDataException("A card has an unknown keyword.");
             if (!Enum.IsDefined(card.Activity)) throw new InvalidDataException("A card has an unknown activity type.");
+            if (!Enum.IsDefined(card.Artwork)) throw new InvalidDataException("A card has an unknown artwork choice.");
             if (card.Id == Guid.Empty || !ids.Add(card.Id)) card.Id = Guid.NewGuid();
         }
     }

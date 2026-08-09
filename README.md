@@ -12,6 +12,8 @@ A small, fully local challenge-card game for Final Fantasy XIV. It uses native D
 - Revealed cards use a padded, double-line celestial-gold inner frame with chamfered corners and diamond accents.
 - Optional BLIND VOLUNTEER, CHOICE, and RANDOM card keywords.
 - Required levemete-style titles and six activity types: Action (Self), Action (Other-Volunteer), Action (Choice), Action (Random), Revelation (Thought), and Revelation (Experience).
+- Activity type and artwork are selected independently for every card.
+- Includes 24 original selectable artwork scenes: six each under SFW, MIXED, NSFW, and NSFW+.
 - Six original embedded portrait card-face templates, one for every activity type. Runtime title, classification, keyword, and instruction text is overlaid into each template's reserved parchment regions.
 - A concealed deck using the supplied celestial-tree card-back image until a card is drawn.
 - A clipboard button for copying a drawn card's text before optionally pasting it into chat.

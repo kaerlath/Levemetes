@@ -28,7 +28,8 @@ public sealed class Plugin : IDalamudPlugin
         var store = new DeckStore(PluginInterface.GetPluginConfigDirectory(), Log);
         var cardBackPath = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "card-back.jpg");
         var templateDirectory = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "Assets", "Templates");
-        mainWindow = new MainWindow(configuration, store, SaveConfiguration, cardBackPath, templateDirectory);
+        var artworkDirectory = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "Assets", "Artwork");
+        mainWindow = new MainWindow(configuration, store, SaveConfiguration, cardBackPath, templateDirectory, artworkDirectory);
         windowSystem.AddWindow(mainWindow);
 
         CommandManager.AddHandler(Command, new CommandInfo(OnCommand) { HelpMessage = "Open Levemetes." });

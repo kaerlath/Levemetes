@@ -28,6 +28,7 @@ public sealed class MainWindow : Window, IDisposable
     private readonly Action<Configuration> saveConfiguration;
     private readonly string cardBackPath;
     private readonly string templateDirectory;
+    private readonly string artworkDirectory;
     private readonly GameSession session = new();
     private readonly FileDialogManager fileDialogManager = new();
     private readonly IFontHandle cardFont;
@@ -45,6 +46,7 @@ public sealed class MainWindow : Window, IDisposable
     private string flavorText = string.Empty;
     private CardCategory cardCategory;
     private ActivityType activityType;
+    private ArtworkChoice artworkChoice;
     private CardCategory playCategory;
     private CardKeyword? cardKeyword;
     private Guid? editingCardId;
@@ -53,7 +55,7 @@ public sealed class MainWindow : Window, IDisposable
     private string transferPath = string.Empty;
 
     public MainWindow(Configuration configuration, DeckStore store, Action<Configuration> saveConfiguration,
-        string cardBackPath, string templateDirectory)
+        string cardBackPath, string templateDirectory, string artworkDirectory)
         : base("Levemetes##LevemetesMain")
     {
         SizeConstraints = new WindowSizeConstraints
@@ -66,6 +68,7 @@ public sealed class MainWindow : Window, IDisposable
         this.saveConfiguration = saveConfiguration;
         this.cardBackPath = cardBackPath;
         this.templateDirectory = templateDirectory;
+        this.artworkDirectory = artworkDirectory;
         const float cardFontSize = 19f;
         cardFont = CreateCardFont(cardFontSize, false, false);
         cardBoldFont = CreateCardFont(cardFontSize, true, false);
@@ -229,6 +232,22 @@ public sealed class MainWindow : Window, IDisposable
                 if (ImGui.Selectable(ActivityLabel(activity), activityType == activity)) activityType = activity;
             ImGui.EndCombo();
         }
+        ImGui.TextUnformatted("Artwork");
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(280 * ImGuiHelpers.GlobalScale);
+        if (ImGui.BeginCombo("##ArtworkChoice", ArtworkLabel(artworkChoice)))
+        {
+            foreach (var group in BasicCategories)
+            {
+                ImGui.TextDisabled(SingleCategoryLabel(group));
+                foreach (var artwork in Enum.GetValues<ArtworkChoice>().Where(value => ArtworkCategory(value) == group))
+                {
+                    if (ImGui.Selectable(ArtworkLabel(artwork), artworkChoice == artwork)) artworkChoice = artwork;
+                }
+                if (group != CardCategory.NsfwPlus) ImGui.Separator();
+            }
+            ImGui.EndCombo();
+        }
         ImGui.Separator();
         ImGui.TextUnformatted("Categories (select one or more)");
         foreach (var category in BasicCategories)
@@ -286,6 +305,8 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.TextUnformatted(card.Title);
                 ImGui.SameLine();
                 ImGui.TextDisabled(ActivityLabel(card.Activity));
+                ImGui.SameLine();
+                ImGui.TextDisabled($"Art: {ArtworkLabel(card.Artwork)}");
                 DrawCategoryLabelsInline(card.Category);
                 if (card.Keyword is CardKeyword keyword)
                 {
@@ -396,6 +417,7 @@ public sealed class MainWindow : Window, IDisposable
             if (card is null) { SetStatus("That card no longer exists.", true); ClearEditor(); return; }
             card.Title = cardTitle.Trim();
             card.Activity = activityType;
+            card.Artwork = artworkChoice;
             card.Category = cardCategory;
             card.Keyword = cardKeyword;
             card.Text = text;
@@ -403,7 +425,8 @@ public sealed class MainWindow : Window, IDisposable
         }
         else selectedDeck.Cards.Add(new Card
         {
-            Title = cardTitle.Trim(), Activity = activityType, Category = cardCategory, Keyword = cardKeyword, Text = text,
+            Title = cardTitle.Trim(), Activity = activityType, Artwork = artworkChoice,
+            Category = cardCategory, Keyword = cardKeyword, Text = text,
             FlavorText = flavorText.Trim(),
         });
         SaveDeck(editingCardId is null ? "Card added." : "Card updated.");
@@ -415,6 +438,7 @@ public sealed class MainWindow : Window, IDisposable
         editingCardId = card.Id;
         cardTitle = card.Title;
         activityType = card.Activity;
+        artworkChoice = card.Artwork;
         cardCategory = card.Category;
         cardKeyword = card.Keyword;
         cardText = card.Text;
@@ -426,6 +450,7 @@ public sealed class MainWindow : Window, IDisposable
         editingCardId = null;
         cardTitle = string.Empty;
         activityType = ActivityType.ActionSelf;
+        artworkChoice = ArtworkChoice.SfwAdventurersResolve;
         cardCategory = CardCategory.Sfw;
         cardKeyword = null;
         cardText = string.Empty;
@@ -519,7 +544,7 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawRevealedTemplate(Card card, Vector2 cardSize)
     {
-        var path = Path.Combine(templateDirectory, TemplateFileName(card.Activity));
+        var path = Path.Combine(templateDirectory, "action-self.png");
         var texture = Plugin.TextureProvider.GetFromFile(path).GetWrapOrDefault();
         if (texture is null)
         {
@@ -529,6 +554,20 @@ public sealed class MainWindow : Window, IDisposable
 
         ImGui.SetCursorPos(Vector2.Zero);
         ImGui.Image(texture.Handle, cardSize);
+
+        var artworkPath = Path.Combine(artworkDirectory, ArtworkFileName(card.Artwork));
+        var artworkTexture = Plugin.TextureProvider.GetFromFile(artworkPath).GetWrapOrDefault();
+        if (artworkTexture is not null)
+        {
+            var artworkPosition = new Vector2(cardSize.X * .045f, cardSize.Y * .115f);
+            var artworkSize = new Vector2(cardSize.X * .91f, cardSize.Y * .265f);
+            ImGui.SetCursorPos(artworkPosition);
+            ImGui.Image(artworkTexture.Handle, artworkSize, new Vector2(0, .165f), new Vector2(1, .835f));
+            var minimum = ImGui.GetWindowPos() + artworkPosition;
+            ImGui.GetWindowDrawList().AddRect(minimum, minimum + artworkSize,
+                ImGui.ColorConvertFloat4ToU32(new Vector4(.65f, .48f, .18f, 1f)),
+                5f * ImGuiHelpers.GlobalScale, ImDrawFlags.None, 2f * ImGuiHelpers.GlobalScale);
+        }
 
         DrawCenteredOverlayText(card.Title, cardSize.Y * 0.026f, 8f,
             new Vector4(0.19f, 0.12f, 0.07f, 1f));
@@ -803,6 +842,72 @@ public sealed class MainWindow : Window, IDisposable
         ActivityType.RevelationThought => "Revelation (Thought)",
         ActivityType.RevelationExperience => "Revelation (Experience)",
         _ => activity.ToString(),
+    };
+
+    private static string ArtworkLabel(ArtworkChoice artwork) => artwork switch
+    {
+        ArtworkChoice.SfwAdventurersResolve => "Adventurer's Resolve",
+        ArtworkChoice.SfwFiresideFellowship => "Fireside Fellowship",
+        ArtworkChoice.SfwScholarsReflection => "Scholar's Reflection",
+        ArtworkChoice.SfwStarlitJourney => "Starlit Journey",
+        ArtworkChoice.SfwFestivalSpirit => "Festival Spirit",
+        ArtworkChoice.SfwGardenSanctuary => "Garden Sanctuary",
+        ArtworkChoice.MixedMasquerade => "Masquerade",
+        ArtworkChoice.MixedDaringWager => "Daring Wager",
+        ArtworkChoice.MixedMidnightConfession => "Midnight Confession",
+        ArtworkChoice.MixedTangledChoices => "Tangled Choices",
+        ArtworkChoice.MixedMoonlitRendezvous => "Moonlit Rendezvous",
+        ArtworkChoice.MixedWildCard => "Wild Card",
+        ArtworkChoice.NsfwCrimsonInvitation => "Crimson Invitation",
+        ArtworkChoice.NsfwVelvetSecrets => "Velvet Secrets",
+        ArtworkChoice.NsfwHeatedChallenge => "Heated Challenge",
+        ArtworkChoice.NsfwForbiddenGlance => "Forbidden Glance",
+        ArtworkChoice.NsfwRoseAndChain => "Rose and Chain",
+        ArtworkChoice.NsfwAfterHours => "After Hours",
+        ArtworkChoice.NsfwPlusInfernalPact => "Infernal Pact",
+        ArtworkChoice.NsfwPlusScarletTemptation => "Scarlet Temptation",
+        ArtworkChoice.NsfwPlusUnboundDesire => "Unbound Desire",
+        ArtworkChoice.NsfwPlusMidnightVice => "Midnight Vice",
+        ArtworkChoice.NsfwPlusBurningOath => "Burning Oath",
+        ArtworkChoice.NsfwPlusNoRestraints => "No Restraints",
+        _ => artwork.ToString(),
+    };
+
+    private static CardCategory ArtworkCategory(ArtworkChoice artwork) => artwork switch
+    {
+        <= ArtworkChoice.SfwGardenSanctuary => CardCategory.Sfw,
+        <= ArtworkChoice.MixedWildCard => CardCategory.Mixed,
+        <= ArtworkChoice.NsfwAfterHours => CardCategory.Nsfw,
+        _ => CardCategory.NsfwPlus,
+    };
+
+    private static string ArtworkFileName(ArtworkChoice artwork) => artwork switch
+    {
+        ArtworkChoice.SfwAdventurersResolve => "sfw-adventurers-resolve.jpg",
+        ArtworkChoice.SfwFiresideFellowship => "sfw-fireside-fellowship.jpg",
+        ArtworkChoice.SfwScholarsReflection => "sfw-scholars-reflection.jpg",
+        ArtworkChoice.SfwStarlitJourney => "sfw-starlit-journey.jpg",
+        ArtworkChoice.SfwFestivalSpirit => "sfw-festival-spirit.jpg",
+        ArtworkChoice.SfwGardenSanctuary => "sfw-garden-sanctuary.jpg",
+        ArtworkChoice.MixedMasquerade => "mixed-masquerade.jpg",
+        ArtworkChoice.MixedDaringWager => "mixed-daring-wager.jpg",
+        ArtworkChoice.MixedMidnightConfession => "mixed-midnight-confession.jpg",
+        ArtworkChoice.MixedTangledChoices => "mixed-tangled-choices.jpg",
+        ArtworkChoice.MixedMoonlitRendezvous => "mixed-moonlit-rendezvous.jpg",
+        ArtworkChoice.MixedWildCard => "mixed-wild-card.jpg",
+        ArtworkChoice.NsfwCrimsonInvitation => "nsfw-crimson-invitation.jpg",
+        ArtworkChoice.NsfwVelvetSecrets => "nsfw-velvet-secrets.jpg",
+        ArtworkChoice.NsfwHeatedChallenge => "nsfw-heated-challenge.jpg",
+        ArtworkChoice.NsfwForbiddenGlance => "nsfw-forbidden-glance.jpg",
+        ArtworkChoice.NsfwRoseAndChain => "nsfw-rose-and-chain.jpg",
+        ArtworkChoice.NsfwAfterHours => "nsfw-after-hours.jpg",
+        ArtworkChoice.NsfwPlusInfernalPact => "nsfwplus-infernal-pact.jpg",
+        ArtworkChoice.NsfwPlusScarletTemptation => "nsfwplus-scarlet-temptation.jpg",
+        ArtworkChoice.NsfwPlusUnboundDesire => "nsfwplus-unbound-desire.jpg",
+        ArtworkChoice.NsfwPlusMidnightVice => "nsfwplus-midnight-vice.jpg",
+        ArtworkChoice.NsfwPlusBurningOath => "nsfwplus-burning-oath.jpg",
+        ArtworkChoice.NsfwPlusNoRestraints => "nsfwplus-no-restraints.jpg",
+        _ => "sfw-adventurers-resolve.jpg",
     };
 
     private static string CategoryLabel(CardCategory category)
