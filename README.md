@@ -2,7 +2,7 @@
 
 ![Levemetes icon](images/icon.png)
 
-A small, fully local challenge-card game for Final Fantasy XIV. It uses native Dalamud/ImGui UI, stores decks as readable JSON in the plugin configuration directory, and has no server, telemetry, or web app.
+A small, fully local challenge-card game for Final Fantasy XIV. It uses native Dalamud/ImGui UI, stores decks in the plugin configuration directory, and has no server, telemetry, or web app.
 
 ## Features
 
@@ -14,6 +14,7 @@ A small, fully local challenge-card game for Final Fantasy XIV. It uses native D
 - Required levemete-style titles and six activity types: Action (Self), Action (Other-Volunteer), Action (Choice), Action (Random), Revelation (Thought), and Revelation (Experience).
 - Activity type and artwork are selected independently for every card.
 - Includes 24 original selectable artwork scenes: six each under SFW, MIXED, NSFW, and NSFW+.
+- Import personal PNG, JPEG, BMP, or GIF artwork in the card editor. Images are automatically center-cropped and resized to an efficient 768×512 JPEG.
 - Six original embedded portrait card-face templates, one for every activity type. Runtime title, classification, keyword, and instruction text is overlaid into each template's reserved parchment regions.
 - A concealed deck using the supplied celestial-tree card-back image until a card is drawn.
 - A clipboard button for copying a drawn card's text before optionally pasting it into chat.
@@ -21,9 +22,11 @@ A small, fully local challenge-card game for Final Fantasy XIV. It uses native D
 - Format card text with bold, italic, underline, and individually centered lines, including combined styles.
 - Add optional flavor text that appears separately at the bottom of a drawn card.
 - Create, rename, switch between, and delete multiple decks.
+- Add an optional deck author, shown beside the selected deck name and carried with shared deck bundles.
 - Automatic local JSON persistence with a starter deck on first launch.
-- Import portable JSON decks with a file browser, either as a new deck or merged into an existing deck with duplicates skipped.
-- Export portable JSON deck files to a chosen path.
+- Import portable `.levemetesdeck` bundles (or legacy JSON decks) with a file browser, either as a new deck or merged into an existing deck with duplicate cards and images skipped.
+- Export a deck and its custom artwork together as one shareable `.levemetesdeck` file.
+- Open the most recent export folder directly from the folder button beside the export control.
 - Input limits, format-version checks, duplicate-ID repair, safe replacement saves, delete confirmations, and visible error messages.
 
 Draw state is session-only. Deck contents persist, but the draw pile resets when the plugin reloads or a deck changes.
@@ -66,9 +69,11 @@ After rebuilding, use Dalamud’s developer plugin reload control or restart the
 
 Live decks are stored under Dalamud’s per-plugin configuration folder in `decks/`. The exact path is displayed on the **Decks & Sharing** tab.
 
-For sharing, enter a JSON path and choose **Export Selected**, then send that exported file outside the game. Another player can use **Import as New Deck...** and select it in the file browser. Imported decks receive a new internal ID, so they do not overwrite an existing deck.
+For sharing, enter a bundle path and choose **Export Selected**, then send the resulting `.levemetesdeck` file outside the game. The bundle contains `deck.json` plus only that deck's custom images; the 24 built-in images are already supplied by the plugin. Another player can use **Import as New Deck...** and select it in the file browser. Imported decks receive new internal IDs, so they do not overwrite an existing deck.
 
-To combine decks, select the destination deck and choose **Merge into Selected...**. Cards that match an existing card's title, activity type, categories, optional keyword, and text are skipped; capitalization and extra whitespace do not create false differences. New cards are added with fresh internal IDs.
+Use **Add Custom Image...** beside the Artwork selector to add personal artwork. Levemetes validates the file, center-crops it to the card's artwork shape, resizes it to 768×512, and stores an optimized local JPEG. The preview shows the same visible crop used by a drawn card. An unused custom image can be removed from the editor; images still assigned to cards are protected from accidental removal.
+
+To combine decks, select the destination deck and choose **Merge into Selected...**. Cards that match an existing card's title, activity type, artwork content, categories, optional keyword, and text are skipped; capitalization and extra whitespace do not create false differences. Identical custom images are reused, and new cards and artwork receive fresh internal IDs.
 
 The card editor includes **Bold**, **Italic**, **Underline**, and **Center Line** buttons. Each button inserts a short editable example using `[b]`, `[i]`, `[u]`, or `[c]` tags. Replace the example words with the text you want formatted. Tags may be nested to combine styles. A `[c]...[/c]` section is centered independently without centering the rest of the card. The tags are rendered as formatting on the card and removed when **Copy Text of Card** is used.
 
@@ -78,9 +83,10 @@ Example deck format:
 
 ```json
 {
-  "FormatVersion": 4,
+  "FormatVersion": 8,
   "Id": "92310d1a-3255-4dd0-ab1d-51007a1a5812",
   "Name": "Example Deck",
+  "Author": "Example Creator",
   "Cards": [
     {
       "Id": "cdf69327-51b8-4731-9088-acba915551db",
@@ -102,7 +108,7 @@ Example deck format:
 }
 ```
 
-Deck names are limited to 80 characters, card text to 1,000 characters, flavor text to 240 characters, and imported files to 5 MB / 5,000 cards. Import only files you trust and review their text before playing.
+Deck names and optional author names are limited to 80 characters, card text to 1,000 characters, flavor text to 240 characters, and decks to 5,000 cards and 200 custom images. Source images are limited to 25 MB and bundles to 100 MB. Bundle contents are validated and never extracted by their supplied paths. Import only files you trust and review their text before playing.
 
 ## Privacy and scope
 

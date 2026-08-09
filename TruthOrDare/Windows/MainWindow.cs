@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface;
 using Dalamud.Interface.Textures;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Windowing;
@@ -21,6 +23,7 @@ public sealed class MainWindow : Window, IDisposable
     private const int MaxCardTitle = 100;
     private const int MaxFlavorText = 240;
     private const int MaxDeckName = 80;
+    private const int MaxDeckAuthor = 80;
     private static readonly CardCategory[] BasicCategories =
         [CardCategory.Sfw, CardCategory.Mixed, CardCategory.Nsfw, CardCategory.NsfwPlus];
     private readonly Configuration configuration;
@@ -47,12 +50,13 @@ public sealed class MainWindow : Window, IDisposable
     private CardCategory cardCategory;
     private ActivityType activityType;
     private ArtworkChoice artworkChoice;
+    private Guid? customArtworkId;
     private CardCategory playCategory;
     private CardKeyword? cardKeyword;
     private Guid? editingCardId;
     private Guid? pendingDeleteCardId;
     private bool requestDeleteDeck;
-    private string transferPath = string.Empty;
+    private string? lastExportPath;
 
     public MainWindow(Configuration configuration, DeckStore store, Action<Configuration> saveConfiguration,
         string cardBackPath, string templateDirectory, string artworkDirectory)
@@ -126,7 +130,12 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.EndCombo();
         }
         ImGui.SameLine();
-        ImGui.TextDisabled($"{session.Remaining} remaining");
+        if (!string.IsNullOrWhiteSpace(selectedDeck.Author))
+        {
+            ImGui.TextDisabled($"by {selectedDeck.Author}");
+            ImGui.SameLine();
+        }
+        ImGui.TextDisabled($"• {session.Remaining} remaining");
     }
 
     private void DrawPlayTab()
@@ -221,6 +230,15 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawCardsTab()
     {
         ImGui.Spacing();
+        ImGui.TextUnformatted("Deck author");
+        ImGui.SameLine();
+        var editedAuthor = selectedDeck.Author;
+        ImGui.SetNextItemWidth(260 * ImGuiHelpers.GlobalScale);
+        if (ImGui.InputTextWithHint("##CardEditorDeckAuthor", "Optional creator name", ref editedAuthor, MaxDeckAuthor + 1))
+            selectedDeck.Author = editedAuthor;
+        ImGui.SameLine();
+        if (ImGui.Button("Save Author##CardEditor")) SaveDeck("Deck author saved.");
+        ImGui.Separator();
         ImGui.TextUnformatted(editingCardId is null ? "Add a card" : "Edit card");
         ImGui.InputTextWithHint("##CardTitle", "Levemete title", ref cardTitle, MaxCardTitle + 1);
         ImGui.TextUnformatted("Activity type");
@@ -236,18 +254,41 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.TextUnformatted("Artwork");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(280 * ImGuiHelpers.GlobalScale);
-        if (ImGui.BeginCombo("##ArtworkChoice", ArtworkLabel(artworkChoice)))
+        var artworkCaption = customArtworkId is Guid selectedCustom
+            ? selectedDeck.CustomArtwork.FirstOrDefault(asset => asset.Id == selectedCustom)?.Name ?? "Missing custom artwork"
+            : ArtworkLabel(artworkChoice);
+        if (ImGui.BeginCombo("##ArtworkChoice", artworkCaption))
         {
             foreach (var group in BasicCategories)
             {
                 ImGui.TextDisabled(SingleCategoryLabel(group));
                 foreach (var artwork in Enum.GetValues<ArtworkChoice>().Where(value => ArtworkCategory(value) == group))
                 {
-                    if (ImGui.Selectable(ArtworkLabel(artwork), artworkChoice == artwork)) artworkChoice = artwork;
+                    if (ImGui.Selectable(ArtworkLabel(artwork), customArtworkId is null && artworkChoice == artwork))
+                    { artworkChoice = artwork; customArtworkId = null; }
                 }
                 if (group != CardCategory.NsfwPlus) ImGui.Separator();
             }
+            if (selectedDeck.CustomArtwork.Count > 0)
+            {
+                ImGui.Separator();
+                ImGui.TextDisabled("CUSTOM");
+                foreach (var asset in selectedDeck.CustomArtwork)
+                    if (ImGui.Selectable(asset.Name, customArtworkId == asset.Id)) customArtworkId = asset.Id;
+            }
             ImGui.EndCombo();
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Add Custom Image...")) OpenArtworkDialog();
+        if (customArtworkId is Guid removable)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button("Remove Custom Image")) TryAction(() =>
+            {
+                store.DeleteCustomArtwork(selectedDeck, removable);
+                customArtworkId = null;
+                SetStatus("Custom artwork removed.");
+            });
         }
         ImGui.Separator();
         ImGui.TextUnformatted("Categories (select one or more)");
@@ -307,7 +348,7 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.SameLine();
                 ImGui.TextDisabled(ActivityLabel(card.Activity));
                 ImGui.SameLine();
-                ImGui.TextDisabled($"Art: {ArtworkLabel(card.Artwork)}");
+                ImGui.TextDisabled($"Art: {ArtworkLabel(card)}");
                 DrawCategoryLabelsInline(card.Category);
                 if (card.Keyword is CardKeyword keyword)
                 {
@@ -337,7 +378,7 @@ public sealed class MainWindow : Window, IDisposable
     {
         ImGui.Spacing();
         ImGui.TextUnformatted("Artwork preview");
-        var path = Path.Combine(artworkDirectory, ArtworkFileName(artworkChoice));
+        var path = ResolveArtworkPath(customArtworkId, artworkChoice);
         var texture = Plugin.TextureProvider.GetFromFile(path).GetWrapOrDefault();
         var availableWidth = ImGui.GetContentRegionAvail().X;
         var width = MathF.Min(availableWidth, 360f * ImGuiHelpers.GlobalScale);
@@ -379,19 +420,31 @@ public sealed class MainWindow : Window, IDisposable
         if (ImGui.InputText("Name", ref editedName, MaxDeckName + 1) && !string.IsNullOrWhiteSpace(editedName)) selectedDeck.Name = editedName;
         ImGui.SameLine();
         if (ImGui.Button("Save Name")) SaveDeck("Deck name saved.");
+        var deckAuthor = selectedDeck.Author;
+        ImGui.SetNextItemWidth(300 * ImGuiHelpers.GlobalScale);
+        if (ImGui.InputTextWithHint("Author##DeckDetails", "Optional creator name", ref deckAuthor, MaxDeckAuthor + 1))
+            selectedDeck.Author = deckAuthor;
+        ImGui.SameLine();
+        if (ImGui.Button("Save Author##DeckDetails")) SaveDeck("Deck author saved.");
         ImGui.SameLine();
         if (decks.Count <= 1) ImGui.BeginDisabled();
         if (ImGui.Button("Delete Deck")) requestDeleteDeck = true;
         if (decks.Count <= 1) ImGui.EndDisabled();
         ImGui.Separator();
-        ImGui.TextWrapped("Import a portable JSON deck as a separate deck, or merge its new cards into the selected deck. Duplicate cards are skipped automatically.");
+        ImGui.TextWrapped("Import a portable .levemetesdeck bundle (including custom artwork) or a legacy JSON deck. Import it separately or merge only its new cards and images into this deck.");
         if (ImGui.Button("Import as New Deck...")) OpenImportDialog(merge: false);
         ImGui.SameLine();
         if (ImGui.Button("Merge into Selected...")) OpenImportDialog(merge: true);
         ImGui.Spacing();
         ImGui.TextUnformatted("Export selected deck");
-        ImGui.InputText("JSON path##Export", ref transferPath, 1024);
-        if (ImGui.Button("Export Selected")) TryAction(() => SetStatus($"Exported to {store.Export(selectedDeck, transferPath)}"));
+        ImGui.TextDisabled("Creates one shareable file containing the deck and its custom artwork.");
+        if (ImGui.Button("Export Selected Deck...")) OpenExportDialog();
+        ImGui.SameLine();
+        if (lastExportPath is null) ImGui.BeginDisabled();
+        if (ImGui.Button($"{FontAwesomeIcon.FolderOpen.ToIconString()}##OpenExportFolder")) OpenLastExportFolder();
+        if (lastExportPath is null) ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(lastExportPath is null ? "Export a deck first" : "Open the exported deck's folder");
         ImGui.TextDisabled($"Your live deck files are stored in: {store.DecksDirectory}");
     }
 
@@ -450,6 +503,7 @@ public sealed class MainWindow : Window, IDisposable
             card.Title = cardTitle.Trim();
             card.Activity = activityType;
             card.Artwork = artworkChoice;
+            card.CustomArtworkId = customArtworkId;
             card.Category = cardCategory;
             card.Keyword = cardKeyword;
             card.Text = text;
@@ -458,6 +512,7 @@ public sealed class MainWindow : Window, IDisposable
         else selectedDeck.Cards.Add(new Card
         {
             Title = cardTitle.Trim(), Activity = activityType, Artwork = artworkChoice,
+            CustomArtworkId = customArtworkId,
             Category = cardCategory, Keyword = cardKeyword, Text = text,
             FlavorText = flavorText.Trim(),
         });
@@ -471,6 +526,7 @@ public sealed class MainWindow : Window, IDisposable
         cardTitle = card.Title;
         activityType = card.Activity;
         artworkChoice = card.Artwork;
+        customArtworkId = card.CustomArtworkId;
         cardCategory = card.Category;
         cardKeyword = card.Keyword;
         cardText = card.Text;
@@ -483,6 +539,7 @@ public sealed class MainWindow : Window, IDisposable
         cardTitle = string.Empty;
         activityType = ActivityType.ActionSelf;
         artworkChoice = ArtworkChoice.SfwAdventurersResolve;
+        customArtworkId = null;
         cardCategory = CardCategory.Sfw;
         cardKeyword = null;
         cardText = string.Empty;
@@ -514,7 +571,7 @@ public sealed class MainWindow : Window, IDisposable
         var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
         fileDialogManager.OpenFileDialog(
             merge ? $"Merge a deck into {selectedDeck.Name}" : "Import a Levemetes deck",
-            ".json",
+            ".levemetesdeck,.json",
             (success, paths) =>
             {
                 if (!success) return;
@@ -523,6 +580,60 @@ public sealed class MainWindow : Window, IDisposable
             1,
             desktop,
             true);
+    }
+
+    private void OpenArtworkDialog()
+    {
+        var pictures = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+        fileDialogManager.OpenFileDialog(
+            "Add custom card artwork",
+            ".png,.jpg,.jpeg,.bmp,.gif",
+            (success, paths) =>
+            {
+                if (!success) return;
+                TryAction(() =>
+                {
+                    var asset = store.AddCustomArtwork(selectedDeck, paths[0]);
+                    customArtworkId = asset.Id;
+                    SetStatus($"Added custom artwork ‘{asset.Name}’. It was automatically cropped and resized.");
+                });
+            },
+            1,
+            pictures,
+            true);
+    }
+
+    private void OpenExportDialog()
+    {
+        var desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+        fileDialogManager.SaveFileDialog(
+            "Export Levemetes deck",
+            ".levemetesdeck",
+            SanitizeFileName(selectedDeck.Name),
+            ".levemetesdeck",
+            (success, path) =>
+            {
+                if (!success) return;
+                TryAction(() =>
+                {
+                    lastExportPath = store.Export(selectedDeck, path);
+                    SetStatus($"Exported to {lastExportPath}");
+                });
+            },
+            desktop,
+            true);
+    }
+
+    private void OpenLastExportFolder()
+    {
+        if (lastExportPath is null) return;
+        TryAction(() =>
+        {
+            var folder = Path.GetDirectoryName(lastExportPath);
+            if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
+                throw new DirectoryNotFoundException("The export folder no longer exists.");
+            Process.Start(new ProcessStartInfo { FileName = folder, UseShellExecute = true });
+        });
     }
 
     private void ImportDeck(string path, bool merge)
@@ -541,14 +652,6 @@ public sealed class MainWindow : Window, IDisposable
         SetStatus($"Imported {deck.Name} as a new deck.");
     }
 
-    private void ImportDeck()
-    {
-        var deck = store.Import(transferPath);
-        decks.Add(deck);
-        SelectDeck(deck);
-        SetStatus($"Imported “{deck.Name}”.");
-    }
-
     private void SelectDeck(Deck deck)
     {
         selectedDeck = deck;
@@ -556,7 +659,6 @@ public sealed class MainWindow : Window, IDisposable
         saveConfiguration(configuration);
         session.Reset(deck, playCategory);
         ClearEditor();
-        transferPath = Path.Combine(store.DecksDirectory, "exports", SanitizeFileName(deck.Name) + ".json");
     }
 
     private void TryAction(Action action)
@@ -576,7 +678,7 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawRevealedTemplate(Card card, Vector2 cardSize)
     {
-        var path = Path.Combine(templateDirectory, "action-self.png");
+        var path = Path.Combine(templateDirectory, TemplateFileName(card.Activity));
         var texture = Plugin.TextureProvider.GetFromFile(path).GetWrapOrDefault();
         if (texture is null)
         {
@@ -587,7 +689,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SetCursorPos(Vector2.Zero);
         ImGui.Image(texture.Handle, cardSize);
 
-        var artworkPath = Path.Combine(artworkDirectory, ArtworkFileName(card.Artwork));
+        var artworkPath = ResolveArtworkPath(card.CustomArtworkId, card.Artwork);
         var artworkTexture = Plugin.TextureProvider.GetFromFile(artworkPath).GetWrapOrDefault();
         if (artworkTexture is not null)
         {
@@ -904,6 +1006,16 @@ public sealed class MainWindow : Window, IDisposable
         ArtworkChoice.NsfwPlusNoRestraints => "No Restraints",
         _ => artwork.ToString(),
     };
+
+    private string ArtworkLabel(Card card)
+    {
+        if (card.CustomArtworkId is not Guid id) return ArtworkLabel(card.Artwork);
+        return selectedDeck.CustomArtwork.FirstOrDefault(asset => asset.Id == id)?.Name ?? "Missing custom artwork";
+    }
+
+    private string ResolveArtworkPath(Guid? customId, ArtworkChoice builtIn) => customId is Guid id
+        ? store.GetArtworkPath(selectedDeck, id)
+        : Path.Combine(artworkDirectory, ArtworkFileName(builtIn));
 
     private static CardCategory ArtworkCategory(ArtworkChoice artwork) => artwork switch
     {
