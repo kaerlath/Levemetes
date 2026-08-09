@@ -232,6 +232,7 @@ public sealed class MainWindow : Window, IDisposable
                 if (ImGui.Selectable(ActivityLabel(activity), activityType == activity)) activityType = activity;
             ImGui.EndCombo();
         }
+        DrawArtworkPreview();
         ImGui.TextUnformatted("Artwork");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(280 * ImGuiHelpers.GlobalScale);
@@ -330,6 +331,37 @@ public sealed class MainWindow : Window, IDisposable
             }
         }
         ImGui.EndChild();
+    }
+
+    private void DrawArtworkPreview()
+    {
+        ImGui.Spacing();
+        ImGui.TextUnformatted("Artwork preview");
+        var path = Path.Combine(artworkDirectory, ArtworkFileName(artworkChoice));
+        var texture = Plugin.TextureProvider.GetFromFile(path).GetWrapOrDefault();
+        var availableWidth = ImGui.GetContentRegionAvail().X;
+        var width = MathF.Min(availableWidth, 360f * ImGuiHelpers.GlobalScale);
+        var size = new Vector2(width, width / 2.23f);
+        var startX = ImGui.GetCursorPosX() + MathF.Max(0, (availableWidth - width) / 2f);
+        ImGui.SetCursorPosX(startX);
+
+        if (texture is null)
+        {
+            ImGui.Dummy(size);
+            var minimum = ImGui.GetItemRectMin();
+            ImGui.GetWindowDrawList().AddRectFilled(minimum, minimum + size,
+                ImGui.ColorConvertFloat4ToU32(new Vector4(.12f, .09f, .08f, 1f)));
+            ImGui.SetCursorScreenPos(minimum + new Vector2(10, 10) * ImGuiHelpers.GlobalScale);
+            ImGui.TextDisabled("Artwork preview unavailable");
+            return;
+        }
+
+        ImGui.Image(texture.Handle, size, new Vector2(0, .165f), new Vector2(1, .835f));
+        var imageMinimum = ImGui.GetItemRectMin();
+        ImGui.GetWindowDrawList().AddRect(imageMinimum, imageMinimum + size,
+            ImGui.ColorConvertFloat4ToU32(new Vector4(.65f, .48f, .18f, 1f)),
+            5f * ImGuiHelpers.GlobalScale, ImDrawFlags.None, 2f * ImGuiHelpers.GlobalScale);
+        ImGui.Spacing();
     }
 
     private void DrawDecksTab()
