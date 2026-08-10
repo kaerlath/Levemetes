@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -40,6 +41,9 @@ public sealed class DirectGameService : IDisposable
     private CardCategory category;
     private DirectGameMode mode;
     private IReadOnlyList<string> playerNames = [];
+    private readonly List<string> turnOrder = [];
+    private bool gameStarted;
+    private int currentTurnIndex = -1;
 
     public DirectGameService(Action<Exception, string>? logWarning = null) => this.logWarning = logWarning;
 
@@ -50,6 +54,18 @@ public sealed class DirectGameService : IDisposable
     public CardCategory Category { get { lock (stateLock) return category; } }
     public string InviteText { get; private set; } = string.Empty;
     public IReadOnlyList<string> Players { get { lock (stateLock) return playerNames; } }
+    public IReadOnlyList<string> TurnOrder { get { lock (stateLock) return turnOrder.ToArray(); } }
+    public bool GameStarted { get { lock (stateLock) return gameStarted; } }
+    public string CurrentPlayer { get { lock (stateLock) return CurrentPlayerLocked(); } }
+
+    public static async Task<string> DiscoverPublicAddressAsync(CancellationToken token = default)
+    {
+        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+        var value = (await client.GetStringAsync("https://api.ipify.org", token)).Trim();
+        if (!IPAddress.TryParse(value, out var address) || address.AddressFamily != AddressFamily.InterNetwork)
+            throw new InvalidOperationException("The public-address service did not return a valid IPv4 address.");
+        return value;
+    }
 
     public void StartHosting(string name, string publicAddress, int listenPort, Deck deck, CardCategory selectedCategory, byte[] deckBundle)
     {
@@ -103,6 +119,55 @@ public sealed class DirectGameService : IDisposable
             _ = hostPeer.SendJsonAsync(PacketType.DrawRequest, new DrawRequest(playerName), cancellation?.Token ?? CancellationToken.None);
     }
 
+    public void StartGame()
+    {
+        if (!IsHost) throw new InvalidOperationException("Only the host can start the game.");
+        GameStateNotice state;
+        lock (stateLock)
+        {
+            var names = new List<string> { playerName };
+            names.AddRange(peers.Select(peer => peer.Name));
+            if (names.Count == 0) throw new InvalidOperationException("There are no players in the room.");
+            for (var index = names.Count - 1; index > 0; index--)
+            {
+                var swap = RandomNumberGenerator.GetInt32(index + 1);
+                (names[index], names[swap]) = (names[swap], names[index]);
+            }
+            turnOrder.Clear();
+            turnOrder.AddRange(names);
+            currentTurnIndex = 0;
+            gameStarted = true;
+            state = MakeGameStateLocked();
+        }
+        BroadcastJson(PacketType.GameState, state);
+        events.Enqueue(new DirectGameEvent(DirectGameEventType.GameStarted, $"Game started. {state.CurrentPlayer} draws first."));
+    }
+
+    public void RemovePlayer(string name)
+    {
+        if (!IsHost) throw new InvalidOperationException("Only the host can remove players.");
+        Peer? removed;
+        GameStateNotice state;
+        lock (stateLock)
+        {
+            removed = peers.FirstOrDefault(peer => peer.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (removed is not null) peers.Remove(removed);
+            var removedIndex = turnOrder.FindIndex(item => item.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (removedIndex >= 0)
+            {
+                turnOrder.RemoveAt(removedIndex);
+                if (removedIndex < currentTurnIndex) currentTurnIndex--;
+                if (currentTurnIndex >= turnOrder.Count) currentTurnIndex = 0;
+            }
+            UpdatePlayerNamesLocked();
+            state = MakeGameStateLocked();
+        }
+        removed?.Dispose();
+        BroadcastPlayerList();
+        BroadcastJson(PacketType.GameState, state);
+        events.Enqueue(new DirectGameEvent(DirectGameEventType.Status, $"{name} was removed from the game."));
+    }
+
     public void ResetSharedPile(Deck deck)
     {
         if (!IsHost) throw new InvalidOperationException("Only the host can shuffle and reset the shared draw pile.");
@@ -131,6 +196,9 @@ public sealed class DirectGameService : IDisposable
             remaining = 0;
             playerNames = [];
             drawPile.Clear();
+            turnOrder.Clear();
+            gameStarted = false;
+            currentTurnIndex = -1;
         }
         if (sessionSecret is not null) CryptographicOperations.ZeroMemory(sessionSecret);
         sessionSecret = null;
@@ -188,6 +256,9 @@ public sealed class DirectGameService : IDisposable
             }
             await peer.SendJsonAsync(PacketType.Welcome, new Welcome(category, remaining), token);
             await peer.SendAsync(PacketType.DeckBundle, lockedBundle!, token);
+            GameStateNotice currentState;
+            lock (stateLock) currentState = MakeGameStateLocked();
+            await peer.SendJsonAsync(PacketType.GameState, currentState, token);
             BroadcastPlayerList();
             events.Enqueue(new DirectGameEvent(DirectGameEventType.Status, $"{peer.Name} joined the room."));
             await ReceiveGuestLoopAsync(peer, token);
@@ -202,9 +273,15 @@ public sealed class DirectGameService : IDisposable
         {
             if (peer is not null)
             {
-                lock (stateLock) { peers.Remove(peer); UpdatePlayerNamesLocked(); }
+                lock (stateLock)
+                {
+                    peers.Remove(peer);
+                    UpdatePlayerNamesLocked();
+                    if (gameStarted && CurrentPlayerLocked().Equals(peer.Name, StringComparison.OrdinalIgnoreCase)) AdvanceTurnLocked();
+                }
                 peer.Dispose();
                 BroadcastPlayerList();
+                BroadcastGameState();
                 if (!string.IsNullOrWhiteSpace(peer.Name)) events.Enqueue(new DirectGameEvent(DirectGameEventType.Status, $"{peer.Name} left the room."));
             }
             else client.Dispose();
@@ -247,6 +324,9 @@ public sealed class DirectGameService : IDisposable
             var deckPacket = await peer.ReceiveAsync(token);
             if (deckPacket.Type != PacketType.DeckBundle) throw new InvalidDataException("The host did not send a deck.");
             events.Enqueue(new DirectGameEvent(DirectGameEventType.DeckReceived, "The host deck was received.", deckPacket.Payload, Remaining: welcome.Remaining, Category: welcome.Category));
+            var statePacket = await peer.ReceiveAsync(token);
+            if (statePacket.Type != PacketType.GameState) throw new InvalidDataException("The host did not send the game state.");
+            ApplyGameState(Deserialize<GameStateNotice>(statePacket.Payload));
             await ReceiveHostLoopAsync(peer, token);
         }
         catch (OperationCanceledException) { client.Dispose(); }
@@ -285,6 +365,9 @@ public sealed class DirectGameService : IDisposable
                     case PacketType.Error:
                         events.Enqueue(new DirectGameEvent(DirectGameEventType.Error, Deserialize<ErrorNotice>(packet.Payload).Message));
                         break;
+                    case PacketType.GameState:
+                        ApplyGameState(Deserialize<GameStateNotice>(packet.Payload));
+                        break;
                 }
             }
         }
@@ -302,14 +385,74 @@ public sealed class DirectGameService : IDisposable
         int count;
         lock (stateLock)
         {
+            if (!gameStarted) { events.Enqueue(new DirectGameEvent(DirectGameEventType.Error, "The host has not started the game yet.")); return; }
+            var current = CurrentPlayerLocked();
+            if (!drawer.Equals(current, StringComparison.OrdinalIgnoreCase))
+            {
+                SendDrawError(drawer, $"It is {current}'s turn.");
+                return;
+            }
             if (drawPile.Count == 0) { events.Enqueue(new DirectGameEvent(DirectGameEventType.Error, "No shared cards remain. The host must shuffle and reset.")); return; }
             cardId = drawPile.Dequeue();
             remaining = drawPile.Count;
             count = remaining;
+            AdvanceTurnLocked();
         }
         var result = new DrawResult(Guid.NewGuid(), cardId, drawer, count);
         events.Enqueue(new DirectGameEvent(DirectGameEventType.CardDrawn, $"{drawer} drew a card.", CardId: cardId, Drawer: drawer, Remaining: count));
         BroadcastJson(PacketType.DrawResult, result);
+        BroadcastGameState();
+    }
+
+    private void SendDrawError(string drawer, string message)
+    {
+        if (drawer.Equals(playerName, StringComparison.OrdinalIgnoreCase))
+            events.Enqueue(new DirectGameEvent(DirectGameEventType.Error, message));
+        else
+        {
+            Peer? peer;
+            lock (stateLock) peer = peers.FirstOrDefault(item => item.Name.Equals(drawer, StringComparison.OrdinalIgnoreCase));
+            if (peer is not null) _ = peer.SendJsonAsync(PacketType.Error, new ErrorNotice(message), cancellation?.Token ?? CancellationToken.None);
+        }
+    }
+
+    private void ApplyGameState(GameStateNotice state)
+    {
+        lock (stateLock)
+        {
+            gameStarted = state.Started;
+            turnOrder.Clear();
+            turnOrder.AddRange(state.TurnOrder);
+            currentTurnIndex = state.CurrentTurnIndex;
+        }
+        events.Enqueue(new DirectGameEvent(state.Started ? DirectGameEventType.GameStarted : DirectGameEventType.GameStateChanged,
+            state.Started ? $"Current turn: {state.CurrentPlayer}" : "Waiting for the host to start the game."));
+    }
+
+    private void BroadcastGameState()
+    {
+        GameStateNotice state;
+        lock (stateLock) state = MakeGameStateLocked();
+        BroadcastJson(PacketType.GameState, state);
+        events.Enqueue(new DirectGameEvent(DirectGameEventType.GameStateChanged,
+            state.Started ? $"Current turn: {state.CurrentPlayer}" : "Waiting for the host to start the game."));
+    }
+
+    private GameStateNotice MakeGameStateLocked() => new(gameStarted, turnOrder.ToArray(), currentTurnIndex, CurrentPlayerLocked());
+
+    private string CurrentPlayerLocked() => gameStarted && currentTurnIndex >= 0 && currentTurnIndex < turnOrder.Count
+        ? turnOrder[currentTurnIndex]
+        : string.Empty;
+
+    private void AdvanceTurnLocked()
+    {
+        if (turnOrder.Count == 0) { currentTurnIndex = -1; return; }
+        var connected = new HashSet<string>(peers.Select(peer => peer.Name), StringComparer.OrdinalIgnoreCase) { playerName };
+        for (var offset = 1; offset <= turnOrder.Count; offset++)
+        {
+            var candidate = (currentTurnIndex + offset) % turnOrder.Count;
+            if (connected.Contains(turnOrder[candidate])) { currentTurnIndex = candidate; return; }
+        }
     }
 
     private void ResetPile(Deck deck)
@@ -392,7 +535,7 @@ public sealed class DirectGameService : IDisposable
     }
     private static T Deserialize<T>(byte[] payload) => JsonSerializer.Deserialize<T>(payload) ?? throw new InvalidDataException("A direct-game message was invalid.");
 
-    private enum PacketType : byte { Join = 1, Welcome, DeckBundle, DrawRequest, DrawResult, PlayerList, Reset, Error }
+    private enum PacketType : byte { Join = 1, Welcome, DeckBundle, DrawRequest, DrawResult, PlayerList, Reset, Error, GameState }
     private sealed record Invite(string Host, int Port, Guid SessionId, string Secret);
     private sealed record JoinRequest(string PlayerName);
     private sealed record Welcome(CardCategory Category, int Remaining);
@@ -401,6 +544,7 @@ public sealed class DirectGameService : IDisposable
     private sealed record PlayerListNotice(IReadOnlyList<string> Names);
     private sealed record ResetNotice(int Remaining);
     private sealed record ErrorNotice(string Message);
+    private sealed record GameStateNotice(bool Started, IReadOnlyList<string> TurnOrder, int CurrentTurnIndex, string CurrentPlayer);
     private sealed record SessionKeys(byte[] HostToClient, byte[] ClientToHost);
 
     private sealed class Peer(TcpClient client, SecureChannel channel) : IDisposable
@@ -467,6 +611,6 @@ public sealed class DirectGameService : IDisposable
 }
 
 public enum DirectGameMode { Disconnected, Connecting, Hosting, Joined }
-public enum DirectGameEventType { Status, Error, DeckReceived, CardDrawn, Reset, PlayerListChanged }
+public enum DirectGameEventType { Status, Error, DeckReceived, CardDrawn, Reset, PlayerListChanged, GameStarted, GameStateChanged }
 public sealed record DirectGameEvent(DirectGameEventType Type, string Message, byte[]? Bundle = null, Guid? CardId = null,
     string? Drawer = null, int Remaining = 0, CardCategory Category = CardCategory.None);

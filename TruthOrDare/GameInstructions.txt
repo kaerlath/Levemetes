@@ -1,0 +1,21 @@
+LEVEMETES — BASIC PLAY INSTRUCTIONS
+
+Deck
+Use the Deck drop-down at the top of the window to choose which collection of cards you want to play. The number beside a deck shows how many cards it contains. In a Direct Private Game, the host chooses and locks the deck for everyone.
+
+Intensity (Heat) Category
+Use the Intensity (Heat) Category drop-down on the Play tab to choose SFW, MIXED, NSFW, or NSFW+. Only cards containing the selected category are placed in the draw pile. In a Direct Private Game, the host's selected intensity is used for everyone.
+
+Draw
+Select Draw to reveal the next randomly shuffled card. In a Direct Private Game, the host starts the game and Levemetes shows whose turn it is. Only the current player can draw.
+
+Copy Text of Card
+After a card is revealed, select Copy Text of Card to copy its main instructions to the clipboard. You may then paste the text into FFXIV chat for other players. Flavor text is not copied.
+
+Shuffle / Reset
+Select Shuffle / Reset to return all eligible cards to the draw pile and shuffle them again. During a Direct Private Game, only the host can use this control.
+
+Game Messages
+Status and error messages appear along the bottom of the main Levemetes window. Check this area for confirmations, connection updates, whose action was accepted, and explanations when something cannot be done.
+
+You can expand this file later with house rules, examples, etiquette, or more detailed Direct Private Game instructions.

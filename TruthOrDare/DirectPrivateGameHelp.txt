@@ -1,0 +1,27 @@
+LEVEMETES DIRECT PRIVATE GAME — BASIC PORT FORWARDING HELP
+
+Direct Private Game requires the host's router to send incoming game connections to the host computer. Router menus differ, but the basic steps are:
+
+1. Find your router address. It is often 192.168.0.1 or 192.168.1.1. Enter that address into a web browser while connected to your home network.
+
+2. Log in to your router. Use the router administrator details supplied by your internet provider or printed on the router. These may be different from your Wi-Fi password.
+
+3. Find the Port Forwarding, NAT, Virtual Server, or Gaming section.
+
+4. Add a new rule for Levemetes:
+   Name: Levemetes
+   Protocol: TCP
+   External port: 43871
+   Internal port: 43871
+   Destination/device address: the host computer's local router-assigned IPv4 address, such as 192.168.1.25
+
+5. Save or apply the rule. Some routers may restart.
+
+6. Allow Final Fantasy XIV/Levemetes through Windows Firewall if Windows asks. The host can then create the Direct Private Game room and privately share the newly generated invitation.
+
+Important:
+- The Public Address field in Levemetes uses the host's public IPv4 address. The router rule uses the host computer's local IPv4 address. These are different addresses.
+- If you change the Listening Port in Levemetes, use that same TCP port in both router port fields instead of 43871.
+- A router may assign the host computer a different local address later. A DHCP reservation in the router can keep it consistent.
+- Some internet providers use carrier-grade NAT (CGNAT), which can prevent ordinary port forwarding. Contact the provider if the rule is correct but outside players still cannot connect.
+- Share invitations only with trusted players. Close the room when play is finished.

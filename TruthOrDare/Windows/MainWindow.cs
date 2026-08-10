@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Numerics;
+using System.Net;
+using System.Threading.Tasks;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
 using Dalamud.Interface.Textures;
@@ -33,6 +35,8 @@ public sealed class MainWindow : Window, IDisposable
     private readonly string cardBackPath;
     private readonly string templateDirectory;
     private readonly string artworkDirectory;
+    private readonly string directGameHelpPath;
+    private readonly string gameInstructionsPath;
     private readonly GameSession session = new();
     private readonly FileDialogManager fileDialogManager = new();
     private readonly IFontHandle cardFont;
@@ -63,6 +67,9 @@ public sealed class MainWindow : Window, IDisposable
     private string directInvitation = string.Empty;
     private Card? directCurrentCard;
     private string directDrawer = string.Empty;
+    private bool requestPlayTab;
+    private bool publicAddressDiscoveryAttempted;
+    private Task<string>? publicAddressDiscoveryTask;
 
     public MainWindow(Configuration configuration, DeckStore store, DirectGameService directGame, Action<Configuration> saveConfiguration,
         string cardBackPath, string templateDirectory, string artworkDirectory)
@@ -80,6 +87,8 @@ public sealed class MainWindow : Window, IDisposable
         this.cardBackPath = cardBackPath;
         this.templateDirectory = templateDirectory;
         this.artworkDirectory = artworkDirectory;
+        directGameHelpPath = Path.Combine(Path.GetDirectoryName(cardBackPath) ?? string.Empty, "DirectPrivateGameHelp.txt");
+        gameInstructionsPath = Path.Combine(Path.GetDirectoryName(cardBackPath) ?? string.Empty, "GameInstructions.txt");
         directPublicAddress = configuration.DirectPublicAddress;
         directPort = configuration.DirectPort;
         const float cardFontSize = 19f;
@@ -115,13 +124,15 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.Separator();
         if (ImGui.BeginTabBar("MainTabs"))
         {
-            if (ImGui.BeginTabItem("Play")) { DrawPlayTab(); ImGui.EndTabItem(); }
+            var playFlags = requestPlayTab ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
+            if (ImGui.BeginTabItem("Play", playFlags)) { requestPlayTab = false; DrawPlayTab(); ImGui.EndTabItem(); }
             if (ImGui.BeginTabItem("Cards")) { DrawCardsTab(); ImGui.EndTabItem(); }
             if (ImGui.BeginTabItem("Decks & Sharing")) { DrawDecksTab(); ImGui.EndTabItem(); }
             if (ImGui.BeginTabItem("Direct Private Game")) { DrawDirectGameTab(); ImGui.EndTabItem(); }
             ImGui.EndTabBar();
         }
         DrawStatus();
+        DrawGameInstructionsButton();
         DrawConfirmations();
         fileDialogManager.Draw();
     }
@@ -178,6 +189,21 @@ public sealed class MainWindow : Window, IDisposable
         var categoryCount = selectedDeck.Cards.Count(card => card.Category.HasFlag(playCategory));
         ImGui.SameLine();
         ImGui.TextDisabled($"{categoryCount} cards");
+        if (directGame.IsConnected)
+        {
+            ImGui.Spacing();
+            ImGui.TextUnformatted($"Direct Private Game Players ({directGame.Players.Count}/8)");
+            foreach (var player in directGame.Players)
+            {
+                var displayName = RemoveHostSuffix(player);
+                var isCurrent = directGame.GameStarted && displayName.Equals(directGame.CurrentPlayer, StringComparison.OrdinalIgnoreCase);
+                ImGui.Bullet();
+                ImGui.SameLine();
+                ImGui.TextColored(isCurrent ? new Vector4(.95f, .78f, .30f, 1f) : Vector4.One,
+                    player + (isCurrent ? " — current turn" : string.Empty));
+            }
+            if (!directGame.IsHost) ImGui.TextDisabled("Only the host can Shuffle / Reset the shared deck.");
+        }
         ImGui.Dummy(new Vector2(0, ImGui.GetTextLineHeightWithSpacing() * 2));
         var width = MathF.Min(ImGui.GetContentRegionAvail().X, 360 * ImGuiHelpers.GlobalScale);
         var cardSize = new Vector2(width, width * 1.50f);
@@ -227,7 +253,10 @@ public sealed class MainWindow : Window, IDisposable
         if (displayedCard is null) ImGui.EndDisabled();
 
         ImGui.Dummy(new Vector2(0, ImGui.GetTextLineHeightWithSpacing()));
-        var canDraw = categoryCount > 0 && (directGame.IsConnected ? directGame.Remaining : session.Remaining) > 0;
+        var localPlayer = GetLocalCharacterLabel();
+        var directTurnReady = !directGame.IsConnected ||
+            (directGame.GameStarted && string.Equals(directGame.CurrentPlayer, localPlayer, StringComparison.OrdinalIgnoreCase));
+        var canDraw = categoryCount > 0 && (directGame.IsConnected ? directGame.Remaining : session.Remaining) > 0 && directTurnReady;
         var buttonGap = 12 * ImGuiHelpers.GlobalScale;
         var availableWidth = ImGui.GetContentRegionAvail().X;
         var actionButtonWidth = MathF.Min(210 * ImGuiHelpers.GlobalScale, (availableWidth - buttonGap) / 2);
@@ -250,8 +279,14 @@ public sealed class MainWindow : Window, IDisposable
             else { session.Reset(selectedDeck, playCategory); SetStatus("Draw pile shuffled."); }
         }
         if (directGame.IsConnected && !directGame.IsHost) ImGui.EndDisabled();
+        if (directGame.IsConnected && !directGame.IsHost && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Only the host can shuffle and reset the shared deck.");
         if (categoryCount > 0 && (directGame.IsConnected ? directGame.Remaining : session.Remaining) == 0)
             ImGui.TextDisabled(directGame.IsConnected && !directGame.IsHost ? "No shared cards remain. The host must shuffle and reset." : "No cards remain in this category. Shuffle / Reset to play again.");
+        else if (directGame.IsConnected && !directGame.GameStarted)
+            ImGui.TextDisabled("Waiting for the host to start the game.");
+        else if (directGame.IsConnected && !directTurnReady)
+            ImGui.TextDisabled($"Waiting for {directGame.CurrentPlayer} to draw.");
     }
 
     private void DrawCardsTab()
@@ -487,6 +522,7 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawDirectGameTab()
     {
+        ProcessPublicAddressDiscovery();
         ImGui.Spacing();
         var enabled = configuration.EnableExperimentalDirectPlay;
         if (directGame.IsConnected) ImGui.BeginDisabled();
@@ -499,6 +535,9 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.TextColored(new Vector4(1f, .68f, .28f, 1f),
             "Direct connections expose the host's IP address to guests and guest IP addresses to the host.");
         ImGui.TextWrapped("Use this only with people you trust. Levemetes encrypts and authenticates game messages, but encryption cannot hide the addresses needed to make a direct connection.");
+        if (ImGui.Button($"{FontAwesomeIcon.QuestionCircle.ToIconString()} Port Forwarding Help"))
+            ImGui.OpenPopup("Direct Private Game Help");
+        DrawDirectGameHelpPopup();
         ImGui.Separator();
 
         if (!enabled)
@@ -509,6 +548,11 @@ public sealed class MainWindow : Window, IDisposable
 
         if (!directGame.IsConnected && directGame.Mode != DirectGameMode.Connecting)
         {
+            if (!publicAddressDiscoveryAttempted && IsLoopbackOrEmpty(directPublicAddress))
+            {
+                publicAddressDiscoveryAttempted = true;
+                DiscoverPublicAddress();
+            }
             var characterLabel = GetLocalCharacterLabel();
             ImGui.TextUnformatted("Playing as");
             ImGui.SameLine();
@@ -522,6 +566,11 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TextWrapped($"The currently selected deck and {CategoryLabel(playCategory)} draw pile will be locked and sent once to each joining player.");
             ImGui.SetNextItemWidth(300 * ImGuiHelpers.GlobalScale);
             ImGui.InputTextWithHint("Public address##DirectHost", "Public IP address or DNS name", ref directPublicAddress, 256);
+            ImGui.SameLine();
+            if (publicAddressDiscoveryTask is not null) ImGui.BeginDisabled();
+            if (ImGui.Button(publicAddressDiscoveryTask is not null ? "Detecting..." : "Detect Public IP")) DiscoverPublicAddress();
+            if (publicAddressDiscoveryTask is not null) ImGui.EndDisabled();
+            ImGui.TextDisabled("Detection contacts api.ipify.org over HTTPS. You may still enter an address manually.");
             ImGui.SetNextItemWidth(140 * ImGuiHelpers.GlobalScale);
             ImGui.InputInt("Listening port##DirectPort", ref directPort);
             if (characterLabel is null) ImGui.BeginDisabled();
@@ -577,6 +626,33 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.SameLine();
             ImGui.TextUnformatted(name);
         }
+        if (!directGame.GameStarted && directGame.IsHost)
+        {
+            ImGui.Spacing();
+            if (ImGui.Button("Start Game", new Vector2(180, 36) * ImGuiHelpers.GlobalScale))
+                TryAction(directGame.StartGame);
+            ImGui.SameLine();
+            ImGui.TextDisabled("Randomizes the first player and turn order.");
+        }
+        if (directGame.GameStarted)
+        {
+            ImGui.Spacing();
+            ImGui.TextUnformatted($"Current turn: {directGame.CurrentPlayer}");
+            ImGui.TextUnformatted("Turn order");
+            foreach (var name in directGame.TurnOrder)
+            {
+                var connected = directGame.Players.Any(item => RemoveHostSuffix(item).Equals(name, StringComparison.OrdinalIgnoreCase));
+                ImGui.Bullet();
+                ImGui.SameLine();
+                ImGui.TextColored(connected ? Vector4.One : new Vector4(.6f, .6f, .6f, 1f),
+                    name + (connected ? string.Empty : " (disconnected)"));
+                if (directGame.IsHost && !name.Equals(GetLocalCharacterLabel(), StringComparison.OrdinalIgnoreCase))
+                {
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton($"Remove##{name}")) TryAction(() => directGame.RemovePlayer(name));
+                }
+            }
+        }
         if (!string.IsNullOrWhiteSpace(directDrawer)) ImGui.TextDisabled($"Most recent draw: {directDrawer}");
         ImGui.Spacing();
         if (ImGui.Button(directGame.IsHost ? "Close Room" : "Leave Room")) LeaveDirectRoom();
@@ -616,6 +692,36 @@ public sealed class MainWindow : Window, IDisposable
         configuration.DirectPort = directPort;
         saveConfiguration(configuration);
     }
+
+    private void DiscoverPublicAddress()
+    {
+        if (publicAddressDiscoveryTask is not null) return;
+        publicAddressDiscoveryTask = DirectGameService.DiscoverPublicAddressAsync();
+    }
+
+    private void ProcessPublicAddressDiscovery()
+    {
+        if (publicAddressDiscoveryTask is not { IsCompleted: true } task) return;
+        publicAddressDiscoveryTask = null;
+        try
+        {
+            directPublicAddress = task.GetAwaiter().GetResult();
+            SaveDirectSettings();
+            SetStatus("Public IPv4 address detected. Router port forwarding may still be required.");
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, "Could not detect the public IPv4 address");
+            SetStatus("Public IP detection failed. Enter the host address manually.", true);
+        }
+    }
+
+    private static bool IsLoopbackOrEmpty(string value) => string.IsNullOrWhiteSpace(value) ||
+        (IPAddress.TryParse(value, out var address) && IPAddress.IsLoopback(address));
+
+    private static string RemoveHostSuffix(string value) => value.EndsWith(" (Host)", StringComparison.Ordinal)
+        ? value[..^7]
+        : value;
 
     private static string? GetLocalCharacterLabel()
     {
@@ -661,6 +767,13 @@ public sealed class MainWindow : Window, IDisposable
                     case DirectGameEventType.Status:
                         SetStatus(gameEvent.Message);
                         break;
+                    case DirectGameEventType.GameStarted:
+                        requestPlayTab = true;
+                        SetStatus(gameEvent.Message);
+                        break;
+                    case DirectGameEventType.GameStateChanged:
+                        SetStatus(gameEvent.Message);
+                        break;
                 }
             }
             catch (Exception ex)
@@ -677,6 +790,62 @@ public sealed class MainWindow : Window, IDisposable
         if (string.IsNullOrWhiteSpace(status)) return;
         ImGui.Separator();
         ImGui.TextColored(statusIsError ? new Vector4(1f, .35f, .35f, 1f) : new Vector4(.45f, .9f, .55f, 1f), status);
+    }
+
+    private void DrawDirectGameHelpPopup()
+    {
+        ImGui.SetNextWindowSize(new Vector2(620, 520) * ImGuiHelpers.GlobalScale, ImGuiCond.FirstUseEver);
+        if (!ImGui.BeginPopupModal("Direct Private Game Help", ImGuiWindowFlags.NoSavedSettings)) return;
+        try
+        {
+            if (File.Exists(directGameHelpPath))
+                ImGui.TextWrapped(File.ReadAllText(directGameHelpPath));
+            else
+                ImGui.TextWrapped("The help file could not be found. Forward TCP port 43871 to this computer's local IPv4 address in your router's Port Forwarding or NAT settings.");
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, "Could not read Direct Private Game help");
+            ImGui.TextWrapped("The help file could not be read. Forward TCP port 43871 to this computer's local IPv4 address in your router's Port Forwarding or NAT settings.");
+        }
+        ImGui.Spacing();
+        if (ImGui.Button("Close", new Vector2(100, 30) * ImGuiHelpers.GlobalScale)) ImGui.CloseCurrentPopup();
+        ImGui.EndPopup();
+    }
+
+    private void DrawGameInstructionsButton()
+    {
+        var size = new Vector2(34, 34) * ImGuiHelpers.GlobalScale;
+        var padding = ImGui.GetStyle().WindowPadding;
+        var windowSize = ImGui.GetWindowSize();
+        ImGui.SetCursorPos(new Vector2(
+            MathF.Max(padding.X, windowSize.X - padding.X - size.X),
+            MathF.Max(ImGui.GetCursorPosY(), windowSize.Y - padding.Y - size.Y)));
+        if (ImGui.Button($"{FontAwesomeIcon.QuestionCircle.ToIconString()}##GameInstructions", size))
+            ImGui.OpenPopup("How to Play Levemetes");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("How to play Levemetes");
+        DrawGameInstructionsPopup();
+    }
+
+    private void DrawGameInstructionsPopup()
+    {
+        ImGui.SetNextWindowSize(new Vector2(580, 500) * ImGuiHelpers.GlobalScale, ImGuiCond.FirstUseEver);
+        if (!ImGui.BeginPopupModal("How to Play Levemetes", ImGuiWindowFlags.NoSavedSettings)) return;
+        try
+        {
+            if (File.Exists(gameInstructionsPath))
+                ImGui.TextWrapped(File.ReadAllText(gameInstructionsPath));
+            else
+                ImGui.TextWrapped("The game instructions file could not be found. Choose a deck and intensity, draw a card, and use Shuffle / Reset when you want to refill the draw pile.");
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, "Could not read Levemetes game instructions");
+            ImGui.TextWrapped("The game instructions file could not be read.");
+        }
+        ImGui.Spacing();
+        if (ImGui.Button("Close", new Vector2(100, 30) * ImGuiHelpers.GlobalScale)) ImGui.CloseCurrentPopup();
+        ImGui.EndPopup();
     }
 
     private void DrawConfirmations()

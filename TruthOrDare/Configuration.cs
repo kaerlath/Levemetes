@@ -11,6 +11,6 @@ public sealed class Configuration : IPluginConfiguration
     public Guid? SelectedDeckId { get; set; }
     public CardCategory SelectedCategory { get; set; } = CardCategory.Sfw;
     public bool EnableExperimentalDirectPlay { get; set; }
-    public string DirectPublicAddress { get; set; } = "127.0.0.1";
+    public string DirectPublicAddress { get; set; } = string.Empty;
     public int DirectPort { get; set; } = 43871;
 }

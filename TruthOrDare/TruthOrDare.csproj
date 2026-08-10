@@ -1,6 +1,6 @@
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>1.1.0.0</Version>
+    <Version>1.1.0.1</Version>
     <AssemblyName>Levemetes</AssemblyName>
     <RootNamespace>TruthOrDare</RootNamespace>
     <PackageProjectUrl>https://github.com/kaerlath/Levemetes</PackageProjectUrl>
@@ -11,6 +11,14 @@
   </PropertyGroup>
   <ItemGroup>
     <Content Include="card-back.jpg">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Visible>true</Visible>
+    </Content>
+    <Content Include="DirectPrivateGameHelp.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Visible>true</Visible>
+    </Content>
+    <Content Include="GameInstructions.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Visible>true</Visible>
     </Content>

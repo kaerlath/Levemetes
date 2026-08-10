@@ -28,6 +28,8 @@ A local-first challenge-card game for Final Fantasy XIV. It uses native Dalamud/
 - Export a deck and its custom artwork together as one shareable `.levemetesdeck` file.
 - Open the most recent export folder directly from the folder button beside the export control.
 - Optionally host or join an encrypted Direct Private Game for up to eight trusted players using a private invitation and automatic `Character Name @ Home World` labels.
+- Let the host start a synchronized game with a randomized turn order; every client switches to Play and only the current player may draw.
+- Preserve disconnected players' seats for reconnection, skip them while offline, and let the host remove a seat permanently.
 - Synchronize the host's locked deck and custom artwork once, then share ordered card-draw and reset events without repeatedly transferring card content.
 - Input limits, format-version checks, duplicate-ID repair, safe replacement saves, delete confirmations, and visible error messages.
 
@@ -53,6 +55,8 @@ The room supports at most eight players. The host owns the shuffled draw pile, r
 Direct messages use a random invitation secret, per-connection derived keys, AES-GCM authenticated encryption, ordered frame counters, strict frame-size limits, and validated `.levemetesdeck` content. The invitation itself contains a secret key and must be treated like a password.
 
 **IP privacy warning:** direct networking cannot hide the addresses used to route the connection. Guests can see the host's IP address, and the host can see connecting guest addresses. Hashing protects deck integrity and duplicate detection; it does not anonymize IP addresses. Use Direct Private Game only with people you trust.
+
+The host screen can discover its public IPv4 address through `https://api.ipify.org` over HTTPS, or the address can be entered manually. This discovery does not configure Windows Firewall or the router: the selected TCP listening port may still need to be allowed and forwarded to the host computer.
 
 ## Requirements
 
