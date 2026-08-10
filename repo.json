@@ -4,7 +4,7 @@
     "Name": "Levemetes",
     "InternalName": "Levemetes",
     "AssemblyVersion": "1.0.9.0",
-    "TestingAssemblyVersion": "1.1.0.0",
+    "TestingAssemblyVersion": "1.1.0.1",
     "TestingDalamudApiLevel": 15,
     "Description": "Player-run levemetes card game for truth or dare shenanigans.  Categorized play with custom decks that can be created and shared between players!  Open with /levemetes",
     "ApplicableVersion": "any",
@@ -16,7 +16,7 @@
     "IsTestingExclusive": false,
     "DownloadLinkInstall": "https://github.com/kaerlath/Levemetes/releases/download/1.0.9/Levemetes-1.0.9.zip",
     "DownloadLinkUpdate": "https://github.com/kaerlath/Levemetes/releases/download/1.0.9/Levemetes-1.0.9.zip",
-    "DownloadLinkTesting": "https://github.com/kaerlath/Levemetes/releases/download/1.1.0-beta.1/Levemetes-1.1.0-beta.1.zip",
-    "LastUpdate": "1786315416"
+    "DownloadLinkTesting": "https://github.com/kaerlath/Levemetes/releases/download/1.1.0-beta.2/Levemetes-1.1.0-beta.2.zip",
+    "LastUpdate": "1786325213"
   }
 ]
