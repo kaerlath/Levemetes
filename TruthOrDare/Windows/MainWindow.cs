@@ -70,6 +70,9 @@ public sealed class MainWindow : Window, IDisposable
     private bool requestPlayTab;
     private bool publicAddressDiscoveryAttempted;
     private Task<string>? publicAddressDiscoveryTask;
+    private Guid? volunteerResolutionId;
+    private long volunteerDeadlineUnixMilliseconds;
+    private string volunteerDrawer = string.Empty;
 
     public MainWindow(Configuration configuration, DeckStore store, DirectGameService directGame, Action<Configuration> saveConfiguration,
         string cardBackPath, string templateDirectory, string artworkDirectory)
@@ -132,6 +135,7 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.EndTabBar();
         }
         DrawStatus();
+        DrawVolunteerPrompt();
         DrawGameInstructionsButton();
         DrawConfirmations();
         fileDialogManager.Draw();
@@ -774,6 +778,26 @@ public sealed class MainWindow : Window, IDisposable
                     case DirectGameEventType.GameStateChanged:
                         SetStatus(gameEvent.Message);
                         break;
+                    case DirectGameEventType.VolunteerPrompt:
+                        volunteerResolutionId = gameEvent.ResolutionId;
+                        volunteerDeadlineUnixMilliseconds = gameEvent.DeadlineUnixMilliseconds;
+                        volunteerDrawer = gameEvent.Drawer ?? "A player";
+                        ImGui.OpenPopup("Blind Volunteer Needed");
+                        SetStatus(gameEvent.Message);
+                        break;
+                    case DirectGameEventType.VolunteerResolved:
+                        volunteerResolutionId = null;
+                        volunteerDeadlineUnixMilliseconds = 0;
+                        volunteerDrawer = string.Empty;
+                        if (gameEvent.CardId is Guid revealedCardId)
+                            directCurrentCard = selectedDeck.Cards.FirstOrDefault(card => card.Id == revealedCardId)
+                                ?? throw new InvalidDataException("The resolved BLIND VOLUNTEER card is missing from the synchronized deck.");
+                        directDrawer = gameEvent.Drawer ?? directDrawer;
+                        SetStatus(gameEvent.Message);
+                        break;
+                    case DirectGameEventType.RandomTargetSelected:
+                        SetStatus(gameEvent.Message);
+                        break;
                 }
             }
             catch (Exception ex)
@@ -790,6 +814,38 @@ public sealed class MainWindow : Window, IDisposable
         if (string.IsNullOrWhiteSpace(status)) return;
         ImGui.Separator();
         ImGui.TextColored(statusIsError ? new Vector4(1f, .35f, .35f, 1f) : new Vector4(.45f, .9f, .55f, 1f), status);
+    }
+
+    private void DrawVolunteerPrompt()
+    {
+        if (volunteerResolutionId is not null) ImGui.OpenPopup("Blind Volunteer Needed");
+        ImGui.SetNextWindowSize(new Vector2(430, 230) * ImGuiHelpers.GlobalScale, ImGuiCond.Appearing);
+        if (!ImGui.BeginPopupModal("Blind Volunteer Needed", ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoSavedSettings)) return;
+        if (volunteerResolutionId is not Guid resolutionId)
+        {
+            ImGui.CloseCurrentPopup();
+            ImGui.EndPopup();
+            return;
+        }
+
+        var remainingMilliseconds = Math.Max(0, volunteerDeadlineUnixMilliseconds - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        var remainingSeconds = (int)Math.Ceiling(remainingMilliseconds / 1000d);
+        ImGui.TextWrapped($"{volunteerDrawer} drew a BLIND VOLUNTEER card. The card itself is hidden from everyone else.");
+        ImGui.Spacing();
+        ImGui.TextWrapped("Volunteer before the countdown ends. If no one volunteers, the host will randomly choose another connected player.");
+        ImGui.Spacing();
+        ImGui.TextColored(new Vector4(.95f, .78f, .30f, 1f), $"Time remaining: {remainingSeconds} seconds");
+        ImGui.Spacing();
+        var buttonSize = new Vector2(190, 40) * ImGuiHelpers.GlobalScale;
+        ImGui.SetCursorPosX((ImGui.GetWindowSize().X - buttonSize.X) / 2);
+        if (ImGui.Button("I VOLUNTEER", buttonSize))
+        {
+            directGame.Volunteer(resolutionId);
+            volunteerResolutionId = null;
+            SetStatus("Volunteer request sent. The first request accepted by the host will be chosen.");
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.EndPopup();
     }
 
     private void DrawDirectGameHelpPopup()

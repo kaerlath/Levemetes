@@ -30,6 +30,7 @@ A local-first challenge-card game for Final Fantasy XIV. It uses native Dalamud/
 - Optionally host or join an encrypted Direct Private Game for up to eight trusted players using a private invitation and automatic `Character Name @ Home World` labels.
 - Let the host start a synchronized game with a randomized turn order; every client switches to Play and only the current player may draw.
 - Preserve disconnected players' seats for reconnection, skip them while offline, and let the host remove a seat permanently.
+- Resolve `BLIND VOLUNTEER` cards privately with a synchronized 30-second volunteer prompt and host-random fallback, and select another connected player automatically for `RANDOM` cards.
 - Synchronize the host's locked deck and custom artwork once, then share ordered card-draw and reset events without repeatedly transferring card content.
 - Input limits, format-version checks, duplicate-ID repair, safe replacement saves, delete confirmations, and visible error messages.
 

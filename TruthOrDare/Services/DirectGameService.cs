@@ -28,6 +28,7 @@ public sealed class DirectGameService : IDisposable
     private readonly object stateLock = new();
     private readonly List<Peer> peers = [];
     private readonly Queue<Guid> drawPile = new();
+    private readonly Dictionary<Guid, CardKeyword?> cardKeywords = [];
     private CancellationTokenSource? cancellation;
     private TcpListener? listener;
     private Peer? hostPeer;
@@ -44,6 +45,7 @@ public sealed class DirectGameService : IDisposable
     private readonly List<string> turnOrder = [];
     private bool gameStarted;
     private int currentTurnIndex = -1;
+    private PendingVolunteer? pendingVolunteer;
 
     public DirectGameService(Action<Exception, string>? logWarning = null) => this.logWarning = logWarning;
 
@@ -88,6 +90,8 @@ public sealed class DirectGameService : IDisposable
         advertisedHost = publicAddress;
         port = listenPort;
         category = selectedCategory;
+        cardKeywords.Clear();
+        foreach (var card in deck.Cards) cardKeywords[card.Id] = card.Keyword;
         ResetPile(deck);
         mode = DirectGameMode.Hosting;
         playerNames = [name + " (Host)"];
@@ -117,6 +121,13 @@ public sealed class DirectGameService : IDisposable
         if (IsHost) HostDraw(playerName);
         else if (Mode == DirectGameMode.Joined && hostPeer is not null)
             _ = hostPeer.SendJsonAsync(PacketType.DrawRequest, new DrawRequest(playerName), cancellation?.Token ?? CancellationToken.None);
+    }
+
+    public void Volunteer(Guid resolutionId)
+    {
+        if (IsHost) ResolveVolunteer(resolutionId, playerName, false);
+        else if (Mode == DirectGameMode.Joined && hostPeer is not null)
+            _ = hostPeer.SendJsonAsync(PacketType.VolunteerRequest, new VolunteerRequest(resolutionId, playerName), cancellation?.Token ?? CancellationToken.None);
     }
 
     public void StartGame()
@@ -196,6 +207,8 @@ public sealed class DirectGameService : IDisposable
             remaining = 0;
             playerNames = [];
             drawPile.Clear();
+            cardKeywords.Clear();
+            pendingVolunteer = null;
             turnOrder.Clear();
             gameStarted = false;
             currentTurnIndex = -1;
@@ -295,6 +308,11 @@ public sealed class DirectGameService : IDisposable
         {
             var packet = await peer.ReceiveAsync(token);
             if (packet.Type == PacketType.DrawRequest) HostDraw(peer.Name);
+            else if (packet.Type == PacketType.VolunteerRequest)
+            {
+                var request = Deserialize<VolunteerRequest>(packet.Payload);
+                ResolveVolunteer(request.ResolutionId, peer.Name, false);
+            }
         }
     }
 
@@ -368,6 +386,26 @@ public sealed class DirectGameService : IDisposable
                     case PacketType.GameState:
                         ApplyGameState(Deserialize<GameStateNotice>(packet.Payload));
                         break;
+                    case PacketType.VolunteerPrompt:
+                        var prompt = Deserialize<VolunteerPrompt>(packet.Payload);
+                        events.Enqueue(new DirectGameEvent(DirectGameEventType.VolunteerPrompt,
+                            $"{prompt.Drawer} drew a BLIND VOLUNTEER card.", ResolutionId: prompt.ResolutionId,
+                            DeadlineUnixMilliseconds: prompt.DeadlineUnixMilliseconds, Drawer: prompt.Drawer));
+                        break;
+                    case PacketType.VolunteerResolved:
+                        var resolution = Deserialize<VolunteerResolved>(packet.Payload);
+                        events.Enqueue(new DirectGameEvent(DirectGameEventType.VolunteerResolved,
+                            resolution.WasAutomatic
+                                ? $"No one volunteered. {resolution.SelectedPlayer} was randomly chosen as the blind volunteer."
+                                : $"{resolution.SelectedPlayer} volunteered as the blind volunteer.",
+                            CardId: resolution.CardId, Drawer: resolution.Drawer, Remaining: resolution.Remaining,
+                            ResolutionId: resolution.ResolutionId, SelectedPlayer: resolution.SelectedPlayer));
+                        break;
+                    case PacketType.RandomTarget:
+                        var target = Deserialize<RandomTargetNotice>(packet.Payload);
+                        events.Enqueue(new DirectGameEvent(DirectGameEventType.RandomTargetSelected,
+                            $"{target.SelectedPlayer} was randomly chosen for {target.Drawer}'s card.", SelectedPlayer: target.SelectedPlayer));
+                        break;
                 }
             }
         }
@@ -385,6 +423,7 @@ public sealed class DirectGameService : IDisposable
         int count;
         lock (stateLock)
         {
+            if (pendingVolunteer is not null) { SendDrawError(drawer, "Resolve the current BLIND VOLUNTEER card before drawing again."); return; }
             if (!gameStarted) { events.Enqueue(new DirectGameEvent(DirectGameEventType.Error, "The host has not started the game yet.")); return; }
             var current = CurrentPlayerLocked();
             if (!drawer.Equals(current, StringComparison.OrdinalIgnoreCase))
@@ -399,9 +438,100 @@ public sealed class DirectGameService : IDisposable
             AdvanceTurnLocked();
         }
         var result = new DrawResult(Guid.NewGuid(), cardId, drawer, count);
-        events.Enqueue(new DirectGameEvent(DirectGameEventType.CardDrawn, $"{drawer} drew a card.", CardId: cardId, Drawer: drawer, Remaining: count));
-        BroadcastJson(PacketType.DrawResult, result);
+        cardKeywords.TryGetValue(cardId, out var keyword);
+        if (keyword == CardKeyword.BlindVolunteer)
+        {
+            StartBlindVolunteer(result);
+        }
+        else
+        {
+            events.Enqueue(new DirectGameEvent(DirectGameEventType.CardDrawn, $"{drawer} drew a card.", CardId: cardId, Drawer: drawer, Remaining: count));
+            BroadcastJson(PacketType.DrawResult, result);
+            if (keyword == CardKeyword.Random) ResolveRandomTarget(drawer);
+        }
         BroadcastGameState();
+    }
+
+    private void StartBlindVolunteer(DrawResult draw)
+    {
+        var resolutionId = Guid.NewGuid();
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(30).ToUnixTimeMilliseconds();
+        List<Peer> otherPeers;
+        lock (stateLock)
+        {
+            pendingVolunteer = new PendingVolunteer(resolutionId, draw.CardId, draw.Drawer, draw.Remaining, deadline);
+            otherPeers = peers.Where(peer => !peer.Name.Equals(draw.Drawer, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
+        if (draw.Drawer.Equals(playerName, StringComparison.OrdinalIgnoreCase))
+            events.Enqueue(new DirectGameEvent(DirectGameEventType.CardDrawn, $"{draw.Drawer} drew a BLIND VOLUNTEER card.", CardId: draw.CardId, Drawer: draw.Drawer, Remaining: draw.Remaining));
+        else
+        {
+            var drawerPeer = peers.FirstOrDefault(peer => peer.Name.Equals(draw.Drawer, StringComparison.OrdinalIgnoreCase));
+            if (drawerPeer is not null) _ = drawerPeer.SendJsonAsync(PacketType.DrawResult, draw, cancellation?.Token ?? CancellationToken.None);
+        }
+
+        var prompt = new VolunteerPrompt(resolutionId, draw.Drawer, deadline);
+        foreach (var peer in otherPeers) _ = peer.SendJsonAsync(PacketType.VolunteerPrompt, prompt, cancellation?.Token ?? CancellationToken.None);
+        if (!draw.Drawer.Equals(playerName, StringComparison.OrdinalIgnoreCase))
+            events.Enqueue(new DirectGameEvent(DirectGameEventType.VolunteerPrompt, $"{draw.Drawer} drew a BLIND VOLUNTEER card.",
+                ResolutionId: resolutionId, DeadlineUnixMilliseconds: deadline, Drawer: draw.Drawer));
+        _ = ResolveVolunteerAfterTimeoutAsync(resolutionId, cancellation?.Token ?? CancellationToken.None);
+    }
+
+    private async Task ResolveVolunteerAfterTimeoutAsync(Guid resolutionId, CancellationToken token)
+    {
+        try { await Task.Delay(TimeSpan.FromSeconds(30), token); ResolveVolunteer(resolutionId, null, true); }
+        catch (OperationCanceledException) { }
+    }
+
+    private void ResolveVolunteer(Guid resolutionId, string? volunteer, bool automatic)
+    {
+        VolunteerResolved result;
+        lock (stateLock)
+        {
+            if (pendingVolunteer is not { } pending || pending.ResolutionId != resolutionId) return;
+            var eligible = peers.Select(peer => peer.Name).Append(playerName)
+                .Where(name => !name.Equals(pending.Drawer, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (!automatic)
+            {
+                if (volunteer is null || !eligible.Contains(volunteer, StringComparer.OrdinalIgnoreCase)) return;
+            }
+            else
+            {
+                if (eligible.Count == 0)
+                {
+                    pendingVolunteer = null;
+                    events.Enqueue(new DirectGameEvent(DirectGameEventType.Error, "No other connected player was available for BLIND VOLUNTEER."));
+                    return;
+                }
+                volunteer = eligible[RandomNumberGenerator.GetInt32(eligible.Count)];
+            }
+            pendingVolunteer = null;
+            result = new VolunteerResolved(resolutionId, pending.CardId, pending.Drawer, pending.Remaining, volunteer!, automatic);
+        }
+        BroadcastJson(PacketType.VolunteerResolved, result);
+        events.Enqueue(new DirectGameEvent(DirectGameEventType.VolunteerResolved,
+            automatic ? $"No one volunteered. {result.SelectedPlayer} was randomly chosen as the blind volunteer."
+                : $"{result.SelectedPlayer} volunteered as the blind volunteer.",
+            CardId: result.CardId, Drawer: result.Drawer, Remaining: result.Remaining,
+            ResolutionId: resolutionId, SelectedPlayer: result.SelectedPlayer));
+    }
+
+    private void ResolveRandomTarget(string drawer)
+    {
+        List<string> eligible;
+        lock (stateLock) eligible = peers.Select(peer => peer.Name).Append(playerName)
+            .Where(name => !name.Equals(drawer, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (eligible.Count == 0)
+        {
+            events.Enqueue(new DirectGameEvent(DirectGameEventType.Error, "No other connected player was available for the RANDOM card."));
+            return;
+        }
+        var selected = eligible[RandomNumberGenerator.GetInt32(eligible.Count)];
+        var notice = new RandomTargetNotice(drawer, selected);
+        BroadcastJson(PacketType.RandomTarget, notice);
+        events.Enqueue(new DirectGameEvent(DirectGameEventType.RandomTargetSelected, $"{selected} was randomly chosen for {drawer}'s card.", SelectedPlayer: selected));
     }
 
     private void SendDrawError(string drawer, string message)
@@ -535,7 +665,7 @@ public sealed class DirectGameService : IDisposable
     }
     private static T Deserialize<T>(byte[] payload) => JsonSerializer.Deserialize<T>(payload) ?? throw new InvalidDataException("A direct-game message was invalid.");
 
-    private enum PacketType : byte { Join = 1, Welcome, DeckBundle, DrawRequest, DrawResult, PlayerList, Reset, Error, GameState }
+    private enum PacketType : byte { Join = 1, Welcome, DeckBundle, DrawRequest, DrawResult, PlayerList, Reset, Error, GameState, VolunteerRequest, VolunteerPrompt, VolunteerResolved, RandomTarget }
     private sealed record Invite(string Host, int Port, Guid SessionId, string Secret);
     private sealed record JoinRequest(string PlayerName);
     private sealed record Welcome(CardCategory Category, int Remaining);
@@ -545,6 +675,11 @@ public sealed class DirectGameService : IDisposable
     private sealed record ResetNotice(int Remaining);
     private sealed record ErrorNotice(string Message);
     private sealed record GameStateNotice(bool Started, IReadOnlyList<string> TurnOrder, int CurrentTurnIndex, string CurrentPlayer);
+    private sealed record VolunteerRequest(Guid ResolutionId, string PlayerName);
+    private sealed record VolunteerPrompt(Guid ResolutionId, string Drawer, long DeadlineUnixMilliseconds);
+    private sealed record VolunteerResolved(Guid ResolutionId, Guid CardId, string Drawer, int Remaining, string SelectedPlayer, bool WasAutomatic);
+    private sealed record RandomTargetNotice(string Drawer, string SelectedPlayer);
+    private sealed record PendingVolunteer(Guid ResolutionId, Guid CardId, string Drawer, int Remaining, long DeadlineUnixMilliseconds);
     private sealed record SessionKeys(byte[] HostToClient, byte[] ClientToHost);
 
     private sealed class Peer(TcpClient client, SecureChannel channel) : IDisposable
@@ -611,6 +746,7 @@ public sealed class DirectGameService : IDisposable
 }
 
 public enum DirectGameMode { Disconnected, Connecting, Hosting, Joined }
-public enum DirectGameEventType { Status, Error, DeckReceived, CardDrawn, Reset, PlayerListChanged, GameStarted, GameStateChanged }
+public enum DirectGameEventType { Status, Error, DeckReceived, CardDrawn, Reset, PlayerListChanged, GameStarted, GameStateChanged, VolunteerPrompt, VolunteerResolved, RandomTargetSelected }
 public sealed record DirectGameEvent(DirectGameEventType Type, string Message, byte[]? Bundle = null, Guid? CardId = null,
-    string? Drawer = null, int Remaining = 0, CardCategory Category = CardCategory.None);
+    string? Drawer = null, int Remaining = 0, CardCategory Category = CardCategory.None, Guid? ResolutionId = null,
+    long DeadlineUnixMilliseconds = 0, string? SelectedPlayer = null);
