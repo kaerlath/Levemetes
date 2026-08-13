@@ -4,9 +4,9 @@
     "Name": "Levemetes",
     "InternalName": "Levemetes",
     "AssemblyVersion": "1.1.0.3",
-    "TestingAssemblyVersion": "1.1.0.10",
+    "TestingAssemblyVersion": "1.2.0.8",
     "TestingDalamudApiLevel": 15,
-    "TestingChangelog": "Beta 7 improves card proportions, text capacity, Activity Type fitting, and the bordered intensity tray.",
+    "TestingChangelog": "Beta 8 introduces redesigned wide-format card templates, improved text spacing, a protected intensity tray, and a resized card back.",
     "Description": "Player-run levemetes card game for truth or dare shenanigans.  Categorized play with custom decks that can be created and shared between players!  Open with /levemetes",
     "ApplicableVersion": "any",
     "RepoUrl": "https://github.com/kaerlath/Levemetes",
@@ -17,7 +17,7 @@
     "IsTestingExclusive": false,
     "DownloadLinkInstall": "https://github.com/kaerlath/Levemetes/releases/download/1.1.1/Levemetes-1.1.1.zip",
     "DownloadLinkUpdate": "https://github.com/kaerlath/Levemetes/releases/download/1.1.1/Levemetes-1.1.1.zip",
-    "DownloadLinkTesting": "https://github.com/kaerlath/Levemetes/releases/download/1.2.0-beta.7/Levemetes-1.2.0-beta.7.zip",
-    "LastUpdate": "1786598982"
+    "DownloadLinkTesting": "https://github.com/kaerlath/Levemetes/releases/download/1.2.0-beta.8/latest.zip",
+    "LastUpdate": "1786602626"
   }
 ]
