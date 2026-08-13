@@ -21,6 +21,13 @@ namespace TruthOrDare.Windows;
 
 public sealed class MainWindow : Window, IDisposable
 {
+    private static readonly Vector4 ThemeGold = new(.72f, .56f, .27f, 1f);
+    private static readonly Vector4 ThemeGoldBright = new(.92f, .76f, .42f, 1f);
+    private static readonly Vector4 ThemeBurgundy = new(.34f, .07f, .12f, 1f);
+    private static readonly Vector4 ThemeBurgundyHover = new(.47f, .10f, .17f, 1f);
+    private static readonly Vector4 ThemePanel = new(.055f, .052f, .060f, .98f);
+    private static readonly Vector4 ThemeField = new(.075f, .072f, .080f, 1f);
+    private static readonly Vector4 ThemeText = new(.91f, .88f, .80f, 1f);
     private const int MaxCardText = 1000;
     private const int MaxCardTitle = 100;
     private const int MaxFlavorText = 240;
@@ -122,9 +129,11 @@ public sealed class MainWindow : Window, IDisposable
 
     public override void Draw()
     {
+        PushLevemetesTheme();
+        DrawWindowTitle();
         ProcessDirectGameEvents();
         DrawDeckSelector();
-        ImGui.Separator();
+        GoldSeparator();
         if (ImGui.BeginTabBar("MainTabs"))
         {
             var playFlags = requestPlayTab ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
@@ -139,12 +148,97 @@ public sealed class MainWindow : Window, IDisposable
         DrawGameInstructionsButton();
         DrawConfirmations();
         fileDialogManager.Draw();
+        PopLevemetesTheme();
+    }
+
+    private static void PushLevemetesTheme()
+    {
+        var scale = ImGuiHelpers.GlobalScale;
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(14, 12) * scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(10, 7) * scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(9, 7) * scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.ItemInnerSpacing, new Vector2(7, 5) * scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 4 * scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 6 * scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.PopupRounding, 6 * scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.TabRounding, 4 * scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.ScrollbarRounding, 6 * scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 1.5f * scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.ChildBorderSize, 1 * scale);
+        ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(.025f, .024f, .030f, .98f));
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, ThemePanel);
+        ImGui.PushStyleColor(ImGuiCol.PopupBg, new Vector4(.035f, .033f, .040f, .99f));
+        ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(ThemeGold.X, ThemeGold.Y, ThemeGold.Z, .72f));
+        ImGui.PushStyleColor(ImGuiCol.BorderShadow, new Vector4(0, 0, 0, .65f));
+        ImGui.PushStyleColor(ImGuiCol.Text, ThemeText);
+        ImGui.PushStyleColor(ImGuiCol.TextDisabled, new Vector4(.62f, .58f, .50f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.FrameBg, ThemeField);
+        ImGui.PushStyleColor(ImGuiCol.FrameBgHovered, new Vector4(.12f, .10f, .11f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.FrameBgActive, new Vector4(.16f, .11f, .12f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.Button, ThemeBurgundy);
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, ThemeBurgundyHover);
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(.56f, .13f, .20f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.Header, new Vector4(.28f, .08f, .12f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.HeaderHovered, new Vector4(.42f, .12f, .17f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.HeaderActive, ThemeBurgundyHover);
+        ImGui.PushStyleColor(ImGuiCol.Tab, new Vector4(.07f, .065f, .075f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.TabHovered, ThemeBurgundyHover);
+        ImGui.PushStyleColor(ImGuiCol.TabActive, ThemeBurgundy);
+        ImGui.PushStyleColor(ImGuiCol.TabUnfocusedActive, new Vector4(.24f, .065f, .10f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.CheckMark, ThemeGoldBright);
+        ImGui.PushStyleColor(ImGuiCol.SliderGrab, ThemeGold);
+        ImGui.PushStyleColor(ImGuiCol.SliderGrabActive, ThemeGoldBright);
+        ImGui.PushStyleColor(ImGuiCol.Separator, new Vector4(ThemeGold.X, ThemeGold.Y, ThemeGold.Z, .52f));
+        ImGui.PushStyleColor(ImGuiCol.SeparatorHovered, ThemeGoldBright);
+        ImGui.PushStyleColor(ImGuiCol.SeparatorActive, ThemeGoldBright);
+        ImGui.PushStyleColor(ImGuiCol.ResizeGrip, new Vector4(ThemeGold.X, ThemeGold.Y, ThemeGold.Z, .25f));
+        ImGui.PushStyleColor(ImGuiCol.ResizeGripHovered, ThemeGold);
+        ImGui.PushStyleColor(ImGuiCol.ResizeGripActive, ThemeGoldBright);
+        ImGui.PushStyleColor(ImGuiCol.ScrollbarBg, new Vector4(.025f, .024f, .030f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.ScrollbarGrab, new Vector4(.28f, .22f, .15f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.ScrollbarGrabHovered, ThemeGold);
+        ImGui.PushStyleColor(ImGuiCol.ScrollbarGrabActive, ThemeGoldBright);
+    }
+
+    private static void PopLevemetesTheme()
+    {
+        ImGui.PopStyleColor(33);
+        ImGui.PopStyleVar(11);
+    }
+
+    private static void DrawWindowTitle()
+    {
+        var text = "L E V E M E T E S";
+        var original = ImGui.GetFontSize();
+        ImGui.SetWindowFontScale(1.35f);
+        var width = ImGui.CalcTextSize(text).X;
+        ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(), (ImGui.GetWindowWidth() - width) / 2));
+        ImGui.TextColored(ThemeGoldBright, text);
+        ImGui.SetWindowFontScale(1f);
+        GoldSeparator();
+    }
+
+    private static void GoldSeparator()
+    {
+        ImGui.PushStyleColor(ImGuiCol.Separator, ThemeGold);
+        ImGui.Separator();
+        ImGui.PopStyleColor();
+    }
+
+    private static void SectionHeading(string title)
+    {
+        ImGui.Spacing();
+        ImGui.TextColored(ThemeGoldBright, title.ToUpperInvariant());
+        ImGui.SameLine();
+        ImGui.Separator();
+        ImGui.Spacing();
     }
 
     private void DrawDeckSelector()
     {
+        ImGui.PushStyleColor(ImGuiCol.FrameBg, new Vector4(.065f, .060f, .068f, 1f));
         ImGui.AlignTextToFramePadding();
-        ImGui.TextUnformatted("Deck");
+        ImGui.TextColored(ThemeGoldBright, "DECK");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(260 * ImGuiHelpers.GlobalScale);
         if (directGame.IsConnected) ImGui.BeginDisabled();
@@ -164,11 +258,13 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.SameLine();
         }
         ImGui.TextDisabled($"• {(directGame.IsConnected ? directGame.Remaining : session.Remaining)} remaining");
+        ImGui.PopStyleColor();
     }
 
     private void DrawPlayTab()
     {
         ImGui.Spacing();
+        SectionHeading("Play a Levemete");
         ImGui.AlignTextToFramePadding();
         ImGui.TextUnformatted("Intensity (Heat) Category");
         ImGui.SameLine();
@@ -296,6 +392,7 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawCardsTab()
     {
         ImGui.Spacing();
+        SectionHeading(editingCardId is null ? "Create a Card" : "Edit Card");
         if (directGame.IsConnected)
         {
             ImGui.TextWrapped("The synchronized deck is locked while Direct Private Game is connected. Leave the room to edit cards.");
@@ -309,8 +406,8 @@ public sealed class MainWindow : Window, IDisposable
             selectedDeck.Author = editedAuthor;
         ImGui.SameLine();
         if (ImGui.Button("Save Author##CardEditor")) SaveDeck("Deck author saved.");
-        ImGui.Separator();
-        ImGui.TextUnformatted(editingCardId is null ? "Add a card" : "Edit card");
+        GoldSeparator();
+        ImGui.TextColored(ThemeGoldBright, "CARD DETAILS");
         ImGui.InputTextWithHint("##CardTitle", "Levemete title", ref cardTitle, MaxCardTitle + 1);
         ImGui.TextUnformatted("Activity type");
         ImGui.SameLine();
@@ -361,8 +458,8 @@ public sealed class MainWindow : Window, IDisposable
                 SetStatus("Custom artwork removed.");
             });
         }
-        ImGui.Separator();
-        ImGui.TextUnformatted("Categories (select one or more)");
+        GoldSeparator();
+        ImGui.TextColored(ThemeGoldBright, "INTENSITY — SELECT ONE OR MORE");
         foreach (var category in BasicCategories)
         {
             if (category != CardCategory.Sfw) ImGui.SameLine();
@@ -373,8 +470,8 @@ public sealed class MainWindow : Window, IDisposable
                 else cardCategory &= ~category;
             }
         }
-        ImGui.Separator();
-        ImGui.TextUnformatted("Optional keyword");
+        GoldSeparator();
+        ImGui.TextColored(ThemeGoldBright, "OPTIONAL KEYWORD");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(190 * ImGuiHelpers.GlobalScale);
         if (ImGui.BeginCombo("##Keyword", cardKeyword is null ? "None" : KeywordLabel(cardKeyword.Value)))
@@ -384,7 +481,7 @@ public sealed class MainWindow : Window, IDisposable
                 if (ImGui.Selectable(KeywordLabel(keyword), cardKeyword == keyword)) cardKeyword = keyword;
             ImGui.EndCombo();
         }
-        ImGui.TextUnformatted("Card text formatting");
+        ImGui.TextColored(ThemeGoldBright, "CARD TEXT");
         ImGui.SameLine();
         if (ImGui.Button("Bold")) AppendFormatting("b", "bold text");
         ImGui.SameLine();
@@ -395,7 +492,7 @@ public sealed class MainWindow : Window, IDisposable
         if (ImGui.Button("Center Line")) AppendFormatting("c", "centered sentence");
         ImGui.TextDisabled("Formatting buttons insert editable text at the end. Styles can be combined by nesting their tags.");
         ImGui.InputTextMultiline("##CardText", ref cardText, MaxCardText + 1, new Vector2(-1, 85 * ImGuiHelpers.GlobalScale));
-        ImGui.TextUnformatted("Optional flavor text");
+        ImGui.TextColored(ThemeGoldBright, "FLAVOR TEXT");
         ImGui.TextDisabled("Shown separately at the bottom of the card. It is not included when card text is copied.");
         ImGui.InputTextMultiline("##FlavorText", ref flavorText, MaxFlavorText + 1,
             new Vector2(-1, 58 * ImGuiHelpers.GlobalScale));
@@ -410,7 +507,8 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.SameLine();
             if (ImGui.Button("Cancel")) ClearEditor();
         }
-        ImGui.Separator();
+        GoldSeparator();
+        ImGui.TextColored(ThemeGoldBright, $"EXISTING CARDS ({selectedDeck.Cards.Count})");
         if (ImGui.BeginChild("CardList", Vector2.Zero, false))
         {
             foreach (var card in selectedDeck.Cards.ToList())
@@ -479,6 +577,7 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawDecksTab()
     {
         ImGui.Spacing();
+        SectionHeading("Decks & Sharing");
         if (directGame.IsConnected)
         {
             ImGui.TextWrapped("Deck management and sharing are locked while Direct Private Game is connected. Leave the room to make changes.");
@@ -528,6 +627,7 @@ public sealed class MainWindow : Window, IDisposable
     {
         ProcessPublicAddressDiscovery();
         ImGui.Spacing();
+        SectionHeading("Direct Private Game");
         var enabled = configuration.EnableExperimentalDirectPlay;
         if (directGame.IsConnected) ImGui.BeginDisabled();
         if (ImGui.Checkbox("Enable Experimental Direct Private Game", ref enabled))
