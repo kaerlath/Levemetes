@@ -306,8 +306,8 @@ public sealed class MainWindow : Window, IDisposable
             if (!directGame.IsHost) ImGui.TextDisabled("Only the host can Shuffle / Reset the shared deck.");
         }
         ImGui.Dummy(new Vector2(0, ImGui.GetTextLineHeightWithSpacing() * 2));
-        var width = MathF.Min(ImGui.GetContentRegionAvail().X, 360 * ImGuiHelpers.GlobalScale);
-        var cardSize = new Vector2(width, width * 1.50f);
+        var width = MathF.Min(ImGui.GetContentRegionAvail().X, 430 * ImGuiHelpers.GlobalScale);
+        var cardSize = new Vector2(width, width * 1.48f);
         ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(), (ImGui.GetContentRegionMax().X - width) / 2));
         ImGui.PushStyleVar(ImGuiStyleVar.ChildBorderSize, 0);
         ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 12 * ImGuiHelpers.GlobalScale);
@@ -455,8 +455,8 @@ public sealed class MainWindow : Window, IDisposable
     {
         ImGui.TextColored(ThemeGoldBright, "LIVE CARD PREVIEW");
         ImGui.TextDisabled("Updates as you edit.");
-        var width = MathF.Min(ImGui.GetContentRegionAvail().X, 400 * ImGuiHelpers.GlobalScale);
-        var cardSize = new Vector2(width, width * 1.50f);
+        var width = MathF.Min(ImGui.GetContentRegionAvail().X, 430 * ImGuiHelpers.GlobalScale);
+        var cardSize = new Vector2(width, width * 1.48f);
         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + MathF.Max(0, (ImGui.GetContentRegionAvail().X - width) / 2));
         var preview = new Card
         {
@@ -1353,8 +1353,10 @@ public sealed class MainWindow : Window, IDisposable
         var artworkTexture = Plugin.TextureProvider.GetFromFile(artworkPath).GetWrapOrDefault();
         if (artworkTexture is not null)
         {
-            var artworkPosition = new Vector2(cardSize.X * .065f, cardSize.Y * .145f);
-            var artworkSize = new Vector2(cardSize.X * .87f, cardSize.Y * .305f);
+            var artworkSize = new Vector2(
+                MathF.Min(cardSize.X * .87f, 330 * ImGuiHelpers.GlobalScale),
+                MathF.Min(cardSize.Y * .275f, 165 * ImGuiHelpers.GlobalScale));
+            var artworkPosition = new Vector2((cardSize.X - artworkSize.X) / 2f, cardSize.Y * .145f);
             ImGui.SetCursorPos(artworkPosition);
             ImGui.Image(artworkTexture.Handle, artworkSize, new Vector2(0, .165f), new Vector2(1, .835f));
             var minimum = ImGui.GetWindowPos() + artworkPosition;
@@ -1365,18 +1367,18 @@ public sealed class MainWindow : Window, IDisposable
 
         DrawCenteredOverlayText(card.Title, cardSize.Y * 0.034f, 8f,
             new Vector4(0.19f, 0.12f, 0.07f, 1f));
-        DrawCenteredOverlayText(ActivityLabel(card.Activity), cardSize.Y * 0.092f, 1f,
+        DrawCenteredOverlayTextFitted(ActivityLabel(card.Activity), cardSize.Y * 0.092f, 1f, cardSize.X * .78f,
             new Vector4(0.28f, 0.20f, 0.10f, 1f));
 
         var windowPosition = ImGui.GetWindowPos();
         var ink = CardInkColor(card.Category);
-        DrawCardContentPanel(windowPosition + new Vector2(cardSize.X * .075f, cardSize.Y * .475f),
-            new Vector2(cardSize.X * .85f, cardSize.Y * .245f), false);
-        DrawCardContentPanel(windowPosition + new Vector2(cardSize.X * .10f, cardSize.Y * .735f),
-            new Vector2(cardSize.X * .80f, cardSize.Y * .105f), true);
+        DrawCardContentPanel(windowPosition + new Vector2(cardSize.X * .065f, cardSize.Y * .425f),
+            new Vector2(cardSize.X * .87f, cardSize.Y * .31f), false);
+        DrawCardContentPanel(windowPosition + new Vector2(cardSize.X * .085f, cardSize.Y * .75f),
+            new Vector2(cardSize.X * .83f, cardSize.Y * .13f), true);
 
         if (card.Keyword is CardKeyword keyword)
-            DrawCenteredOverlayText(KeywordLabel(keyword), cardSize.Y * .455f, 0f,
+            DrawCenteredOverlayText(KeywordLabel(keyword), cardSize.Y * .402f, 0f,
                 new Vector4(0.45f, 0.30f, 0.10f, 1f));
 
         DrawFormattedCardText(card.Text, cardSize, ink);
@@ -1408,8 +1410,8 @@ public sealed class MainWindow : Window, IDisposable
         if (values.Length == 0) return;
         var scale = ImGuiHelpers.GlobalScale;
         var windowPosition = ImGui.GetWindowPos();
-        var plaqueTop = windowPosition + new Vector2(cardSize.X * .18f, cardSize.Y * .86f);
-        var plaqueSize = new Vector2(cardSize.X * .64f, cardSize.Y * .035f);
+        var plaqueTop = windowPosition + new Vector2(cardSize.X * .27f, cardSize.Y * .845f);
+        var plaqueSize = new Vector2(cardSize.X * .46f, cardSize.Y * .028f);
         var drawList = ImGui.GetWindowDrawList();
         drawList.AddRectFilled(plaqueTop, plaqueTop + plaqueSize,
             ImGui.ColorConvertFloat4ToU32(new Vector4(.34f, .09f, .12f, .96f)), 3 * scale);
@@ -1421,10 +1423,22 @@ public sealed class MainWindow : Window, IDisposable
         drawList.AddText(plaqueTop + (plaqueSize - labelSize) / 2,
             ImGui.ColorConvertFloat4ToU32(new Vector4(.96f, .87f, .67f, 1f)), label);
 
-        var badgeY = cardSize.Y * .905f;
+        var badgeY = cardSize.Y * .888f;
         var gap = 5 * scale;
         var widths = values.Select(value => CategoryBadgeSize(value).X).ToArray();
         var total = widths.Sum() + MathF.Max(0, values.Length - 1) * gap;
+        var trayPadding = new Vector2(11, 6) * scale;
+        var badgeHeight = values.Select(value => CategoryBadgeSize(value).Y).Max();
+        var trayMinimum = windowPosition + new Vector2((cardSize.X - total) / 2, badgeY) - trayPadding;
+        var trayMaximum = trayMinimum + new Vector2(total, badgeHeight) + trayPadding * 2;
+        drawList.AddRectFilled(trayMinimum, trayMaximum,
+            ImGui.ColorConvertFloat4ToU32(new Vector4(.93f, .88f, .76f, .96f)), 5 * scale);
+        drawList.AddRect(trayMinimum, trayMaximum,
+            ImGui.ColorConvertFloat4ToU32(new Vector4(.58f, .41f, .17f, 1f)), 5 * scale,
+            ImDrawFlags.None, 1.8f * scale);
+        drawList.AddRect(trayMinimum + new Vector2(4 * scale), trayMaximum - new Vector2(4 * scale),
+            ImGui.ColorConvertFloat4ToU32(new Vector4(.73f, .59f, .35f, .55f)), 4 * scale,
+            ImDrawFlags.None, scale);
         ImGui.SetCursorPos(new Vector2(MathF.Max(0, (cardSize.X - total) / 2), badgeY));
         for (var index = 0; index < values.Length; index++)
         {
@@ -1453,13 +1467,13 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawFormattedCardText(string text, Vector2 cardSize, Vector4 color)
     {
-        var origin = ImGui.GetWindowPos() + new Vector2(cardSize.X * 0.105f, cardSize.Y * 0.505f);
-        var maxX = ImGui.GetWindowPos().X + cardSize.X * 0.895f;
+        var origin = ImGui.GetWindowPos() + new Vector2(cardSize.X * 0.095f, cardSize.Y * 0.455f);
+        var maxX = ImGui.GetWindowPos().X + cardSize.X * 0.905f;
         var contentWidth = maxX - origin.X;
         var lineHeight = 24f * ImGuiHelpers.GlobalScale;
         var lines = LayoutFormattedLines(text, contentWidth);
         var y = origin.Y;
-        var maximumLines = Math.Max(1, (int)MathF.Floor(cardSize.Y * 0.19f / lineHeight));
+        var maximumLines = Math.Max(1, (int)MathF.Floor(cardSize.Y * 0.255f / lineHeight));
 
         foreach (var line in lines.Take(maximumLines))
         {
@@ -1484,13 +1498,14 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawFlavorText(string text, Vector2 cardSize, Vector4 color)
     {
-        var origin = ImGui.GetWindowPos() + new Vector2(cardSize.X * 0.13f, cardSize.Y * 0.755f);
-        var contentWidth = cardSize.X * 0.74f;
+        var origin = ImGui.GetWindowPos() + new Vector2(cardSize.X * 0.115f, cardSize.Y * 0.77f);
+        var contentWidth = cardSize.X * 0.77f;
         var lineHeight = 20f * ImGuiHelpers.GlobalScale;
         var lines = LayoutFlavorLines(text, contentWidth);
         var y = origin.Y;
 
-        foreach (var line in lines.Take(3))
+        var maximumLines = Math.Max(1, (int)MathF.Floor(cardSize.Y * .09f / lineHeight));
+        foreach (var line in lines.Take(maximumLines))
         {
             var x = origin.X + MathF.Max(0, (contentWidth - line.Width) / 2f);
             foreach (var token in line.Tokens)
@@ -1659,6 +1674,20 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SetCursorPosY(y);
         var originalSize = ImGui.GetFontSize();
         ImGui.SetWindowFontScale((originalSize + extraPoints * ImGuiHelpers.GlobalScale) / originalSize);
+        CenteredText(text, color);
+        ImGui.SetWindowFontScale(1f);
+    }
+
+    private static void DrawCenteredOverlayTextFitted(string text, float y, float extraPoints, float maximumWidth, Vector4 color)
+    {
+        ImGui.SetCursorPosX(0);
+        ImGui.SetCursorPosY(y);
+        var originalSize = ImGui.GetFontSize();
+        var desiredScale = (originalSize + extraPoints * ImGuiHelpers.GlobalScale) / originalSize;
+        var naturalWidth = ImGui.CalcTextSize(text).X * desiredScale;
+        var fittedScale = naturalWidth > maximumWidth ? desiredScale * maximumWidth / naturalWidth : desiredScale;
+        fittedScale = MathF.Max(.72f, fittedScale);
+        ImGui.SetWindowFontScale(fittedScale);
         CenteredText(text, color);
         ImGui.SetWindowFontScale(1f);
     }
