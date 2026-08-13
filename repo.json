@@ -4,9 +4,9 @@
     "Name": "Levemetes",
     "InternalName": "Levemetes",
     "AssemblyVersion": "1.1.0.3",
-    "TestingAssemblyVersion": "1.1.0.6",
+    "TestingAssemblyVersion": "1.1.0.8",
     "TestingDalamudApiLevel": 15,
-    "TestingChangelog": "Beta 2 adds a two-column card editor with a complete live card preview and independently scrollable editor and card-list panels.",
+    "TestingChangelog": "Beta 5 card redesigns.",
     "Description": "Player-run levemetes card game for truth or dare shenanigans.  Categorized play with custom decks that can be created and shared between players!  Open with /levemetes",
     "ApplicableVersion": "any",
     "RepoUrl": "https://github.com/kaerlath/Levemetes",
@@ -17,7 +17,7 @@
     "IsTestingExclusive": false,
     "DownloadLinkInstall": "https://github.com/kaerlath/Levemetes/releases/download/1.1.1/Levemetes-1.1.1.zip",
     "DownloadLinkUpdate": "https://github.com/kaerlath/Levemetes/releases/download/1.1.1/Levemetes-1.1.1.zip",
-    "DownloadLinkTesting": "https://github.com/kaerlath/Levemetes/releases/download/1.2.0-beta.3/Levemetes-1.2.0-beta.3.zip",
-    "LastUpdate": "1786592277"
+    "DownloadLinkTesting": "https://github.com/kaerlath/Levemetes/releases/download/1.2.0-beta.5/Levemetes-1.2.0-beta.5.zip",
+    "LastUpdate": "1786597509"
   }
 ]
