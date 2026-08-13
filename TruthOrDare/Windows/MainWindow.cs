@@ -519,7 +519,9 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawCardEditorForm()
     {
-        SectionHeading(editingCardId is null ? "Create a Card" : "Edit Card");
+        ImGui.Spacing();
+        ImGui.TextColored(ThemeGoldBright, editingCardId is null ? "CREATE A CARD" : "EDIT CARD");
+        ImGui.Spacing();
         ImGui.TextUnformatted("Deck author");
         ImGui.SameLine();
         var editedAuthor = selectedDeck.Author;
@@ -1351,8 +1353,8 @@ public sealed class MainWindow : Window, IDisposable
         var artworkTexture = Plugin.TextureProvider.GetFromFile(artworkPath).GetWrapOrDefault();
         if (artworkTexture is not null)
         {
-            var artworkPosition = new Vector2(cardSize.X * .045f, cardSize.Y * .115f);
-            var artworkSize = new Vector2(cardSize.X * .91f, cardSize.Y * .265f);
+            var artworkPosition = new Vector2(cardSize.X * .065f, cardSize.Y * .145f);
+            var artworkSize = new Vector2(cardSize.X * .87f, cardSize.Y * .305f);
             ImGui.SetCursorPos(artworkPosition);
             ImGui.Image(artworkTexture.Handle, artworkSize, new Vector2(0, .165f), new Vector2(1, .835f));
             var minimum = ImGui.GetWindowPos() + artworkPosition;
@@ -1361,27 +1363,74 @@ public sealed class MainWindow : Window, IDisposable
                 5f * ImGuiHelpers.GlobalScale, ImDrawFlags.None, 2f * ImGuiHelpers.GlobalScale);
         }
 
-        DrawCenteredOverlayText(card.Title, cardSize.Y * 0.026f, 8f,
+        DrawCenteredOverlayText(card.Title, cardSize.Y * 0.034f, 8f,
             new Vector4(0.19f, 0.12f, 0.07f, 1f));
-        DrawCenteredOverlayText(ActivityLabel(card.Activity), cardSize.Y * 0.074f, 1f,
+        DrawCenteredOverlayText(ActivityLabel(card.Activity), cardSize.Y * 0.092f, 1f,
             new Vector4(0.28f, 0.20f, 0.10f, 1f));
 
-        ImGui.SetCursorPos(new Vector2(0, cardSize.Y * 0.395f));
-        DrawCategoryHeading(card.Category);
+        var windowPosition = ImGui.GetWindowPos();
+        var ink = CardInkColor(card.Category);
+        DrawCardContentPanel(windowPosition + new Vector2(cardSize.X * .075f, cardSize.Y * .475f),
+            new Vector2(cardSize.X * .85f, cardSize.Y * .245f), false);
+        DrawCardContentPanel(windowPosition + new Vector2(cardSize.X * .10f, cardSize.Y * .735f),
+            new Vector2(cardSize.X * .80f, cardSize.Y * .105f), true);
+
         if (card.Keyword is CardKeyword keyword)
-            CenteredText(KeywordLabel(keyword), new Vector4(0.45f, 0.30f, 0.10f, 1f));
+            DrawCenteredOverlayText(KeywordLabel(keyword), cardSize.Y * .455f, 0f,
+                new Vector4(0.45f, 0.30f, 0.10f, 1f));
 
-        ImGui.SetCursorPos(new Vector2(cardSize.X * 0.09f, cardSize.Y * 0.49f));
-        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.18f, 0.12f, 0.08f, 1f));
-        var labelSize = ImGui.GetFontSize();
-        ImGui.SetWindowFontScale((labelSize + 2f * ImGuiHelpers.GlobalScale) / labelSize);
-        ImGui.TextUnformatted("Objective");
-        ImGui.SetWindowFontScale(1f);
-        ImGui.PopStyleColor();
-
-        DrawFormattedCardText(card.Text, cardSize, CardInkColor(card.Category));
+        DrawFormattedCardText(card.Text, cardSize, ink);
         if (!string.IsNullOrWhiteSpace(card.FlavorText))
-            DrawFlavorText(card.FlavorText, cardSize, CardInkColor(card.Category));
+            DrawFlavorText(card.FlavorText, cardSize, ink);
+        DrawIntensityFooter(card.Category, cardSize);
+    }
+
+    private static void DrawCardContentPanel(Vector2 minimum, Vector2 size, bool inset)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var fill = inset
+            ? new Vector4(.91f, .86f, .74f, .92f)
+            : new Vector4(.95f, .92f, .84f, .88f);
+        var border = new Vector4(.56f, .40f, .17f, .92f);
+        var rounding = 5 * ImGuiHelpers.GlobalScale;
+        drawList.AddRectFilled(minimum, minimum + size, ImGui.ColorConvertFloat4ToU32(fill), rounding);
+        drawList.AddRect(minimum, minimum + size, ImGui.ColorConvertFloat4ToU32(border), rounding,
+            ImDrawFlags.None, (inset ? 1.4f : 1.8f) * ImGuiHelpers.GlobalScale);
+        var inner = 5 * ImGuiHelpers.GlobalScale;
+        drawList.AddRect(minimum + new Vector2(inner), minimum + size - new Vector2(inner),
+            ImGui.ColorConvertFloat4ToU32(new Vector4(.68f, .54f, .30f, .48f)), rounding,
+            ImDrawFlags.None, ImGuiHelpers.GlobalScale);
+    }
+
+    private static void DrawIntensityFooter(CardCategory categories, Vector2 cardSize)
+    {
+        var values = CategoriesIn(categories).ToArray();
+        if (values.Length == 0) return;
+        var scale = ImGuiHelpers.GlobalScale;
+        var windowPosition = ImGui.GetWindowPos();
+        var plaqueTop = windowPosition + new Vector2(cardSize.X * .18f, cardSize.Y * .86f);
+        var plaqueSize = new Vector2(cardSize.X * .64f, cardSize.Y * .035f);
+        var drawList = ImGui.GetWindowDrawList();
+        drawList.AddRectFilled(plaqueTop, plaqueTop + plaqueSize,
+            ImGui.ColorConvertFloat4ToU32(new Vector4(.34f, .09f, .12f, .96f)), 3 * scale);
+        drawList.AddRect(plaqueTop, plaqueTop + plaqueSize,
+            ImGui.ColorConvertFloat4ToU32(new Vector4(.76f, .59f, .28f, 1f)), 3 * scale,
+            ImDrawFlags.None, 1.5f * scale);
+        var label = "I N T E N S I T Y";
+        var labelSize = ImGui.CalcTextSize(label);
+        drawList.AddText(plaqueTop + (plaqueSize - labelSize) / 2,
+            ImGui.ColorConvertFloat4ToU32(new Vector4(.96f, .87f, .67f, 1f)), label);
+
+        var badgeY = cardSize.Y * .905f;
+        var gap = 5 * scale;
+        var widths = values.Select(value => CategoryBadgeSize(value).X).ToArray();
+        var total = widths.Sum() + MathF.Max(0, values.Length - 1) * gap;
+        ImGui.SetCursorPos(new Vector2(MathF.Max(0, (cardSize.X - total) / 2), badgeY));
+        for (var index = 0; index < values.Length; index++)
+        {
+            if (index > 0) ImGui.SameLine(0, gap);
+            DrawCategoryBadge(values[index]);
+        }
     }
 
     private IFontHandle CreateCardFont(float size, bool bold, bool italic)
@@ -1404,13 +1453,13 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawFormattedCardText(string text, Vector2 cardSize, Vector4 color)
     {
-        var origin = ImGui.GetWindowPos() + new Vector2(cardSize.X * 0.09f, cardSize.Y * 0.55f);
-        var maxX = ImGui.GetWindowPos().X + cardSize.X * 0.91f;
+        var origin = ImGui.GetWindowPos() + new Vector2(cardSize.X * 0.105f, cardSize.Y * 0.505f);
+        var maxX = ImGui.GetWindowPos().X + cardSize.X * 0.895f;
         var contentWidth = maxX - origin.X;
         var lineHeight = 24f * ImGuiHelpers.GlobalScale;
         var lines = LayoutFormattedLines(text, contentWidth);
         var y = origin.Y;
-        var maximumLines = Math.Max(1, (int)MathF.Floor(cardSize.Y * 0.23f / lineHeight));
+        var maximumLines = Math.Max(1, (int)MathF.Floor(cardSize.Y * 0.19f / lineHeight));
 
         foreach (var line in lines.Take(maximumLines))
         {
@@ -1435,8 +1484,8 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawFlavorText(string text, Vector2 cardSize, Vector4 color)
     {
-        var origin = ImGui.GetWindowPos() + new Vector2(cardSize.X * 0.11f, cardSize.Y * 0.80f);
-        var contentWidth = cardSize.X * 0.78f;
+        var origin = ImGui.GetWindowPos() + new Vector2(cardSize.X * 0.13f, cardSize.Y * 0.755f);
+        var contentWidth = cardSize.X * 0.74f;
         var lineHeight = 20f * ImGuiHelpers.GlobalScale;
         var lines = LayoutFlavorLines(text, contentWidth);
         var y = origin.Y;
