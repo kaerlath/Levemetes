@@ -5,7 +5,7 @@ namespace TruthOrDare.Models;
 
 public sealed class Deck
 {
-    public const int CurrentFormatVersion = 8;
+    public const int CurrentFormatVersion = 9;
 
     public int FormatVersion { get; set; } = CurrentFormatVersion;
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -13,4 +13,5 @@ public sealed class Deck
     public string Author { get; set; } = string.Empty;
     public List<Card> Cards { get; set; } = [];
     public List<CustomArtworkAsset> CustomArtwork { get; set; } = [];
+    public string CustomCardBackSha256 { get; set; } = string.Empty;
 }

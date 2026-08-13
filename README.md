@@ -26,6 +26,8 @@ A local-first challenge-card game for Final Fantasy XIV. It uses native Dalamud/
 - Automatic local JSON persistence with a starter deck on first launch.
 - Import portable `.levemetesdeck` bundles (or legacy JSON decks) with a file browser, either as a new deck or merged into an existing deck with duplicate cards and images skipped.
 - Export a deck and its custom artwork together as one shareable `.levemetesdeck` file.
+- Give each deck an optional custom card back that is automatically cropped, resized, exported, imported, and synchronized with Direct Private Game players.
+- Search large decks by card title, text, flavor text, activity, intensity, or keyword in the three-column card editor.
 - Open the most recent export folder directly from the folder button beside the export control.
 - Optionally host or join an encrypted Direct Private Game for up to eight trusted players using a private invitation and automatic `Character Name @ Home World` labels.
 - Let the host start a synchronized game with a randomized turn order; every client switches to Play and only the current player may draw.

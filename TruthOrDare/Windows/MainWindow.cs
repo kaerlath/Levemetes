@@ -80,6 +80,7 @@ public sealed class MainWindow : Window, IDisposable
     private Guid? volunteerResolutionId;
     private long volunteerDeadlineUnixMilliseconds;
     private string volunteerDrawer = string.Empty;
+    private string cardSearchText = string.Empty;
 
     public MainWindow(Configuration configuration, DeckStore store, DirectGameService directGame, Action<Configuration> saveConfiguration,
         string cardBackPath, string templateDirectory, string artworkDirectory)
@@ -318,7 +319,7 @@ public sealed class MainWindow : Window, IDisposable
         {
             if (displayedCard is null)
             {
-                var texture = Plugin.TextureProvider.GetFromFile(cardBackPath).GetWrapOrDefault();
+                var texture = Plugin.TextureProvider.GetFromFile(CurrentCardBackPath()).GetWrapOrDefault();
                 if (texture is not null)
                 {
                     var available = ImGui.GetContentRegionAvail();
@@ -401,20 +402,22 @@ public sealed class MainWindow : Window, IDisposable
 
         DrawCardEditorDeckHeader();
         var available = ImGui.GetContentRegionAvail();
-        var gap = 14 * ImGuiHelpers.GlobalScale;
-        var minimumLeft = 330 * ImGuiHelpers.GlobalScale;
-        var leftWidth = MathF.Min(MathF.Max(available.X * .43f, minimumLeft), 520 * ImGuiHelpers.GlobalScale);
-        if (available.X < 760 * ImGuiHelpers.GlobalScale) leftWidth = MathF.Max(280 * ImGuiHelpers.GlobalScale, available.X * .46f);
+        var gap = 12 * ImGuiHelpers.GlobalScale;
+        var leftWidth = MathF.Max(300 * ImGuiHelpers.GlobalScale, available.X * .34f);
+        var rightWidth = MathF.Max(250 * ImGuiHelpers.GlobalScale, available.X * .25f);
 
         ImGui.BeginChild("CardEditorLeft", new Vector2(leftWidth, available.Y), true);
         DrawLiveCardPreview();
-        GoldSeparator();
-        DrawExistingCardList();
+        ImGui.EndChild();
+
+        ImGui.SameLine(0, gap);
+        ImGui.BeginChild("CardEditorCenter", new Vector2(MathF.Max(300 * ImGuiHelpers.GlobalScale, available.X - leftWidth - rightWidth - gap * 2), available.Y), true);
+        DrawCardEditorForm();
         ImGui.EndChild();
 
         ImGui.SameLine(0, gap);
         ImGui.BeginChild("CardEditorRight", new Vector2(0, available.Y), true);
-        DrawCardEditorForm();
+        DrawExistingCardList();
         ImGui.EndChild();
     }
 
@@ -422,7 +425,7 @@ public sealed class MainWindow : Window, IDisposable
     {
         var height = 66 * ImGuiHelpers.GlobalScale;
         ImGui.BeginChild("CardEditorDeckHeader", new Vector2(0, height), true, ImGuiWindowFlags.NoScrollbar);
-        var texture = Plugin.TextureProvider.GetFromFile(cardBackPath).GetWrapOrDefault();
+        var texture = Plugin.TextureProvider.GetFromFile(CurrentCardBackPath()).GetWrapOrDefault();
         var thumbnail = new Vector2(34, 48) * ImGuiHelpers.GlobalScale;
         if (texture is not null) ImGui.Image(texture.Handle, thumbnail);
         else ImGui.Dummy(thumbnail);
@@ -433,6 +436,17 @@ public sealed class MainWindow : Window, IDisposable
             ? $"{selectedDeck.Cards.Count} cards"
             : $"by {selectedDeck.Author}  •  {selectedDeck.Cards.Count} cards");
         ImGui.EndGroup();
+        ImGui.SameLine();
+        if (ImGui.Button("Change Card Back…")) OpenCardBackDialog();
+        if (store.GetCustomCardBackPath(selectedDeck) is not null)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button("Use Default Back")) TryAction(() =>
+            {
+                store.RemoveCustomCardBack(selectedDeck);
+                SetStatus("Restored the default card back for this deck.");
+            });
+        }
         ImGui.EndChild();
         ImGui.Spacing();
     }
@@ -465,9 +479,13 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawExistingCardList()
     {
         ImGui.TextColored(ThemeGoldBright, $"EXISTING CARDS ({selectedDeck.Cards.Count})");
-        ImGui.TextDisabled("Select Edit to load a card into the editor.");
+        ImGui.SetNextItemWidth(-1);
+        ImGui.InputTextWithHint("##CardSearch", "Search title, text, activity, keyword…", ref cardSearchText, 160);
+        var query = cardSearchText.Trim();
+        var cards = selectedDeck.Cards.Where(card => CardMatchesSearch(card, query)).ToList();
+        ImGui.TextDisabled(string.IsNullOrEmpty(query) ? "Select Edit to load a card." : $"{cards.Count} matching card{(cards.Count == 1 ? string.Empty : "s")}");
         if (!ImGui.BeginChild("CardList", Vector2.Zero, false)) { ImGui.EndChild(); return; }
-        foreach (var card in selectedDeck.Cards.ToList())
+        foreach (var card in cards)
         {
             ImGui.PushID(card.Id.ToString());
             ImGui.TextUnformatted(card.Title);
@@ -486,6 +504,17 @@ public sealed class MainWindow : Window, IDisposable
             GoldSeparator();
         }
         ImGui.EndChild();
+    }
+
+    private static bool CardMatchesSearch(Card card, string query)
+    {
+        if (string.IsNullOrWhiteSpace(query)) return true;
+        return card.Title.Contains(query, StringComparison.OrdinalIgnoreCase)
+            || StripFormatting(card.Text).Contains(query, StringComparison.OrdinalIgnoreCase)
+            || card.FlavorText.Contains(query, StringComparison.OrdinalIgnoreCase)
+            || ActivityLabel(card.Activity).Contains(query, StringComparison.OrdinalIgnoreCase)
+            || CategoryLabel(card.Category).Contains(query, StringComparison.OrdinalIgnoreCase)
+            || (card.Keyword is CardKeyword keyword && KeywordLabel(keyword).Contains(query, StringComparison.OrdinalIgnoreCase));
     }
 
     private void DrawCardEditorForm()
@@ -1209,6 +1238,28 @@ public sealed class MainWindow : Window, IDisposable
             pictures,
             true);
     }
+
+    private void OpenCardBackDialog()
+    {
+        var pictures = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+        fileDialogManager.OpenFileDialog(
+            "Choose a custom deck card back",
+            ".png,.jpg,.jpeg,.bmp,.gif",
+            (success, paths) =>
+            {
+                if (!success) return;
+                TryAction(() =>
+                {
+                    store.SetCustomCardBack(selectedDeck, paths[0]);
+                    SetStatus("Custom card back added. The image was center-cropped and resized automatically.");
+                });
+            },
+            1,
+            pictures,
+            true);
+    }
+
+    private string CurrentCardBackPath() => store.GetCustomCardBackPath(selectedDeck) ?? cardBackPath;
 
     private void OpenExportDialog()
     {

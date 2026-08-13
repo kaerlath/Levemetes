@@ -28,6 +28,8 @@ public sealed class DeckStore
     private const long MaxBundleBytes = 100L * 1024 * 1024;
     private const int ArtworkWidth = 768;
     private const int ArtworkHeight = 512;
+    private const int CardBackWidth = 512;
+    private const int CardBackHeight = 768;
     private readonly string decksDirectory;
     private readonly string artworkRoot;
     private readonly Action<Exception, string, string>? logWarning;
@@ -84,6 +86,32 @@ public sealed class DeckStore
 
     public string GetArtworkPath(Deck deck, Guid artworkId) =>
         Path.Combine(DeckArtworkDirectory(deck.Id), $"{artworkId:N}.jpg");
+
+    public string? GetCustomCardBackPath(Deck deck)
+    {
+        var path = Path.Combine(DeckArtworkDirectory(deck.Id), "card-back.jpg");
+        return !string.IsNullOrWhiteSpace(deck.CustomCardBackSha256) && File.Exists(path) ? path : null;
+    }
+
+    public void SetCustomCardBack(Deck deck, string sourcePath)
+    {
+        var fullPath = Path.GetFullPath(sourcePath);
+        if (!File.Exists(fullPath)) throw new FileNotFoundException("The selected card-back image does not exist.", fullPath);
+        if (new FileInfo(fullPath).Length > MaxSourceImageBytes) throw new InvalidDataException("Images must be smaller than 25 MB.");
+        var bytes = NormalizeImage(File.ReadAllBytes(fullPath), CardBackWidth, CardBackHeight);
+        Directory.CreateDirectory(DeckArtworkDirectory(deck.Id));
+        File.WriteAllBytes(Path.Combine(DeckArtworkDirectory(deck.Id), "card-back.jpg"), bytes);
+        deck.CustomCardBackSha256 = Hash(bytes);
+        Save(deck);
+    }
+
+    public void RemoveCustomCardBack(Deck deck)
+    {
+        var path = Path.Combine(DeckArtworkDirectory(deck.Id), "card-back.jpg");
+        if (File.Exists(path)) File.Delete(path);
+        deck.CustomCardBackSha256 = string.Empty;
+        Save(deck);
+    }
 
     public CustomArtworkAsset AddCustomArtwork(Deck deck, string sourcePath)
     {
@@ -143,6 +171,13 @@ public sealed class DeckStore
                 using var output = entry.Open();
                 input.CopyTo(output);
             }
+            if (GetCustomCardBackPath(deck) is string cardBackPath)
+            {
+                var entry = archive.CreateEntry("card-back.jpg", CompressionLevel.Optimal);
+                using var input = File.OpenRead(cardBackPath);
+                using var output = entry.Open();
+                input.CopyTo(output);
+            }
         }
         if (memory.Length > MaxBundleBytes) throw new InvalidDataException("The deck bundle is larger than 100 MB.");
         return memory.ToArray();
@@ -170,7 +205,7 @@ public sealed class DeckStore
         var imported = ReadImport(path);
         var deck = imported.Deck;
         deck.Id = Guid.NewGuid();
-        InstallArtwork(deck, imported.Images);
+        InstallArtwork(deck, imported.Images, imported.CardBack);
         Save(deck);
         return deck;
     }
@@ -204,12 +239,12 @@ public sealed class DeckStore
         var info = new FileInfo(fullPath);
         if (info.Length > MaxBundleBytes) throw new InvalidDataException("Deck bundles must be smaller than 100 MB.");
         if (fullPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
-            return new ImportedDeck(ReadJson(File.ReadAllBytes(fullPath), preserveId: false), []);
+            return new ImportedDeck(ReadJson(File.ReadAllBytes(fullPath), preserveId: false), [], null);
         if (!fullPath.EndsWith(".levemetesdeck", StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Choose a .levemetesdeck bundle or legacy .json deck.");
 
         using var archive = ZipFile.OpenRead(fullPath);
-        if (archive.Entries.Count > MaxCustomArtwork + 1) throw new InvalidDataException("The deck bundle contains too many files.");
+        if (archive.Entries.Count > MaxCustomArtwork + 2) throw new InvalidDataException("The deck bundle contains too many files.");
         var deckEntries = archive.Entries.Where(entry => entry.FullName.Equals("deck.json", StringComparison.OrdinalIgnoreCase)).ToList();
         if (deckEntries.Count != 1 || deckEntries[0].Length > 5 * 1024 * 1024)
             throw new InvalidDataException("The bundle must contain one valid deck.json file.");
@@ -232,7 +267,19 @@ public sealed class DeckStore
                 throw new InvalidDataException($"Custom artwork ‘{asset.Name}’ did not pass its integrity check.");
             images[asset.Id] = normalized;
         }
-        return new ImportedDeck(deck, images);
+        byte[]? cardBack = null;
+        if (!string.IsNullOrWhiteSpace(deck.CustomCardBackSha256))
+        {
+            var entries = archive.Entries.Where(entry => entry.FullName.Equals("card-back.jpg", StringComparison.OrdinalIgnoreCase)).ToList();
+            if (entries.Count != 1 || entries[0].Length > MaxSourceImageBytes) throw new InvalidDataException("The custom card back is missing or invalid.");
+            using var stream = entries[0].Open();
+            using var memory = new MemoryStream();
+            stream.CopyTo(memory);
+            cardBack = memory.ToArray();
+            ValidateStoredImage(cardBack, CardBackWidth, CardBackHeight, "card back");
+            if (!Hash(cardBack).Equals(deck.CustomCardBackSha256, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("The custom card back did not pass its integrity check.");
+        }
+        return new ImportedDeck(deck, images, cardBack);
     }
 
     private Dictionary<Guid, Guid> MergeArtwork(ImportedDeck imported, Deck destination)
@@ -252,7 +299,7 @@ public sealed class DeckStore
         return map;
     }
 
-    private void InstallArtwork(Deck deck, IReadOnlyDictionary<Guid, byte[]> images)
+    private void InstallArtwork(Deck deck, IReadOnlyDictionary<Guid, byte[]> images, byte[]? cardBack)
     {
         var oldToNew = new Dictionary<Guid, Guid>();
         foreach (var asset in deck.CustomArtwork)
@@ -266,6 +313,12 @@ public sealed class DeckStore
         }
         foreach (var card in deck.Cards)
             if (card.CustomArtworkId is Guid old) card.CustomArtworkId = oldToNew[old];
+        if (!string.IsNullOrWhiteSpace(deck.CustomCardBackSha256))
+        {
+            if (cardBack is null) throw new InvalidDataException("The imported card back was not included in the deck.");
+            Directory.CreateDirectory(DeckArtworkDirectory(deck.Id));
+            File.WriteAllBytes(Path.Combine(DeckArtworkDirectory(deck.Id), "card-back.jpg"), cardBack);
+        }
     }
 
     private Deck ReadJson(byte[] json, bool preserveId)
@@ -287,6 +340,7 @@ public sealed class DeckStore
             _ => ArtworkChoice.SfwAdventurersResolve,
         };
         deck.CustomArtwork ??= [];
+        deck.CustomCardBackSha256 ??= string.Empty;
         deck.FormatVersion = Deck.CurrentFormatVersion;
         if (!preserveId) deck.Id = Guid.NewGuid();
         Validate(deck, requireArtworkFiles: preserveId);
@@ -302,6 +356,7 @@ public sealed class DeckStore
         if (deck.Author.Length > MaxAuthorLength) throw new InvalidDataException($"Deck authors may contain at most {MaxAuthorLength} characters.");
         deck.Cards ??= [];
         deck.CustomArtwork ??= [];
+        deck.CustomCardBackSha256 ??= string.Empty;
         if (deck.Cards.Count > MaxCardsPerDeck) throw new InvalidDataException($"A deck may contain at most {MaxCardsPerDeck} cards.");
         if (deck.CustomArtwork.Count > MaxCustomArtwork) throw new InvalidDataException($"A deck may contain at most {MaxCustomArtwork} custom images.");
         var artworkIds = new HashSet<Guid>();
@@ -311,6 +366,13 @@ public sealed class DeckStore
             if (asset.Id == Guid.Empty || !artworkIds.Add(asset.Id)) throw new InvalidDataException("Custom artwork identifiers must be unique.");
             if (asset.Sha256.Length != 64 || asset.Sha256.Any(ch => !Uri.IsHexDigit(ch))) throw new InvalidDataException("Custom artwork has an invalid integrity value.");
             if (requireArtworkFiles && !File.Exists(GetArtworkPath(deck, asset.Id))) throw new InvalidDataException($"Custom artwork ‘{asset.Name}’ is missing from local storage.");
+        }
+        if (!string.IsNullOrWhiteSpace(deck.CustomCardBackSha256))
+        {
+            if (deck.CustomCardBackSha256.Length != 64 || deck.CustomCardBackSha256.Any(ch => !Uri.IsHexDigit(ch)))
+                throw new InvalidDataException("The custom card back has an invalid integrity value.");
+            if (requireArtworkFiles && GetCustomCardBackPath(deck) is null)
+                throw new InvalidDataException("The custom card back is missing from local storage.");
         }
         var ids = new HashSet<Guid>();
         foreach (var card in deck.Cards)
@@ -337,7 +399,9 @@ public sealed class DeckStore
             card.Keyword?.ToString() ?? string.Empty, Normalize(card.Text), Normalize(card.FlavorText));
     }
 
-    private static byte[] NormalizeImage(byte[] source)
+    private static byte[] NormalizeImage(byte[] source) => NormalizeImage(source, ArtworkWidth, ArtworkHeight);
+
+    private static byte[] NormalizeImage(byte[] source, int targetWidth, int targetHeight)
     {
         try
         {
@@ -345,17 +409,17 @@ public sealed class DeckStore
             using var image = Image.FromStream(input, useEmbeddedColorManagement: true, validateImageData: true);
             if (image.Width < 64 || image.Height < 64 || image.Width > 16000 || image.Height > 16000)
                 throw new InvalidDataException("Images must be between 64 and 16,000 pixels in each dimension.");
-            using var outputImage = new Bitmap(ArtworkWidth, ArtworkHeight, PixelFormat.Format24bppRgb);
+            using var outputImage = new Bitmap(targetWidth, targetHeight, PixelFormat.Format24bppRgb);
             using (var graphics = Graphics.FromImage(outputImage))
             {
                 graphics.Clear(Color.Black);
                 graphics.CompositingQuality = CompositingQuality.HighQuality;
                 graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 graphics.SmoothingMode = SmoothingMode.HighQuality;
-                var scale = Math.Max((double)ArtworkWidth / image.Width, (double)ArtworkHeight / image.Height);
+                var scale = Math.Max((double)targetWidth / image.Width, (double)targetHeight / image.Height);
                 var width = image.Width * scale;
                 var height = image.Height * scale;
-                graphics.DrawImage(image, (float)((ArtworkWidth - width) / 2), (float)((ArtworkHeight - height) / 2), (float)width, (float)height);
+                graphics.DrawImage(image, (float)((targetWidth - width) / 2), (float)((targetHeight - height) / 2), (float)width, (float)height);
             }
             using var output = new MemoryStream();
             var codec = ImageCodecInfo.GetImageEncoders().First(item => item.FormatID == ImageFormat.Jpeg.Guid);
@@ -370,18 +434,20 @@ public sealed class DeckStore
         }
     }
 
-    private static void ValidateStoredArtwork(byte[] source)
+    private static void ValidateStoredArtwork(byte[] source) => ValidateStoredImage(source, ArtworkWidth, ArtworkHeight, "custom artwork");
+
+    private static void ValidateStoredImage(byte[] source, int width, int height, string label)
     {
         try
         {
             using var input = new MemoryStream(source);
             using var image = Image.FromStream(input, useEmbeddedColorManagement: true, validateImageData: true);
-            if (image.Width != ArtworkWidth || image.Height != ArtworkHeight || image.RawFormat.Guid != ImageFormat.Jpeg.Guid)
-                throw new InvalidDataException($"Bundled custom artwork must be a {ArtworkWidth}×{ArtworkHeight} JPEG image.");
+            if (image.Width != width || image.Height != height || image.RawFormat.Guid != ImageFormat.Jpeg.Guid)
+                throw new InvalidDataException($"Bundled {label} must be a {width}×{height} JPEG image.");
         }
         catch (Exception ex) when (ex is ArgumentException or ExternalException or OutOfMemoryException)
         {
-            throw new InvalidDataException("Bundled custom artwork is not a readable JPEG image.", ex);
+            throw new InvalidDataException($"Bundled {label} is not a readable JPEG image.", ex);
         }
     }
 
@@ -417,5 +483,5 @@ public sealed class DeckStore
         }
         return text.Trim();
     }
-    private sealed record ImportedDeck(Deck Deck, Dictionary<Guid, byte[]> Images);
+    private sealed record ImportedDeck(Deck Deck, Dictionary<Guid, byte[]> Images, byte[]? CardBack);
 }
