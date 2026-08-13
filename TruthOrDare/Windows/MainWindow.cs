@@ -392,12 +392,105 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawCardsTab()
     {
         ImGui.Spacing();
-        SectionHeading(editingCardId is null ? "Create a Card" : "Edit Card");
         if (directGame.IsConnected)
         {
+            SectionHeading("Cards");
             ImGui.TextWrapped("The synchronized deck is locked while Direct Private Game is connected. Leave the room to edit cards.");
             return;
         }
+
+        DrawCardEditorDeckHeader();
+        var available = ImGui.GetContentRegionAvail();
+        var gap = 14 * ImGuiHelpers.GlobalScale;
+        var minimumLeft = 330 * ImGuiHelpers.GlobalScale;
+        var leftWidth = MathF.Min(MathF.Max(available.X * .43f, minimumLeft), 520 * ImGuiHelpers.GlobalScale);
+        if (available.X < 760 * ImGuiHelpers.GlobalScale) leftWidth = MathF.Max(280 * ImGuiHelpers.GlobalScale, available.X * .46f);
+
+        ImGui.BeginChild("CardEditorLeft", new Vector2(leftWidth, available.Y), true);
+        DrawLiveCardPreview();
+        GoldSeparator();
+        DrawExistingCardList();
+        ImGui.EndChild();
+
+        ImGui.SameLine(0, gap);
+        ImGui.BeginChild("CardEditorRight", new Vector2(0, available.Y), true);
+        DrawCardEditorForm();
+        ImGui.EndChild();
+    }
+
+    private void DrawCardEditorDeckHeader()
+    {
+        var height = 66 * ImGuiHelpers.GlobalScale;
+        ImGui.BeginChild("CardEditorDeckHeader", new Vector2(0, height), true, ImGuiWindowFlags.NoScrollbar);
+        var texture = Plugin.TextureProvider.GetFromFile(cardBackPath).GetWrapOrDefault();
+        var thumbnail = new Vector2(34, 48) * ImGuiHelpers.GlobalScale;
+        if (texture is not null) ImGui.Image(texture.Handle, thumbnail);
+        else ImGui.Dummy(thumbnail);
+        ImGui.SameLine();
+        ImGui.BeginGroup();
+        ImGui.TextColored(ThemeGoldBright, $"Deck: {selectedDeck.Name}");
+        ImGui.TextDisabled(string.IsNullOrWhiteSpace(selectedDeck.Author)
+            ? $"{selectedDeck.Cards.Count} cards"
+            : $"by {selectedDeck.Author}  •  {selectedDeck.Cards.Count} cards");
+        ImGui.EndGroup();
+        ImGui.EndChild();
+        ImGui.Spacing();
+    }
+
+    private void DrawLiveCardPreview()
+    {
+        ImGui.TextColored(ThemeGoldBright, "LIVE CARD PREVIEW");
+        ImGui.TextDisabled("Updates as you edit.");
+        var width = MathF.Min(ImGui.GetContentRegionAvail().X, 400 * ImGuiHelpers.GlobalScale);
+        var cardSize = new Vector2(width, width * 1.50f);
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + MathF.Max(0, (ImGui.GetContentRegionAvail().X - width) / 2));
+        var preview = new Card
+        {
+            Title = string.IsNullOrWhiteSpace(cardTitle) ? "Untitled Levemete" : cardTitle,
+            Activity = activityType,
+            Artwork = artworkChoice,
+            CustomArtworkId = customArtworkId,
+            Category = cardCategory == CardCategory.None ? CardCategory.Sfw : cardCategory,
+            Keyword = cardKeyword,
+            Text = string.IsNullOrWhiteSpace(cardText) ? "Your card text will appear here as you type." : cardText,
+            FlavorText = flavorText,
+        };
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, Vector2.Zero);
+        if (ImGui.BeginChild("EditorCardPreview", cardSize, true, ImGuiWindowFlags.NoScrollbar))
+            DrawRevealedTemplate(preview, cardSize);
+        ImGui.EndChild();
+        ImGui.PopStyleVar();
+    }
+
+    private void DrawExistingCardList()
+    {
+        ImGui.TextColored(ThemeGoldBright, $"EXISTING CARDS ({selectedDeck.Cards.Count})");
+        ImGui.TextDisabled("Select Edit to load a card into the editor.");
+        if (!ImGui.BeginChild("CardList", Vector2.Zero, false)) { ImGui.EndChild(); return; }
+        foreach (var card in selectedDeck.Cards.ToList())
+        {
+            ImGui.PushID(card.Id.ToString());
+            ImGui.TextUnformatted(card.Title);
+            ImGui.SameLine();
+            ImGui.TextDisabled(ActivityLabel(card.Activity));
+            DrawCategoryLabelsInline(card.Category);
+            if (card.Keyword is CardKeyword keyword)
+            {
+                ImGui.SameLine();
+                ImGui.TextColored(ThemeGoldBright, KeywordLabel(keyword));
+            }
+            if (ImGui.SmallButton("Edit")) BeginEdit(card);
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Delete")) pendingDeleteCardId = card.Id;
+            ImGui.PopID();
+            GoldSeparator();
+        }
+        ImGui.EndChild();
+    }
+
+    private void DrawCardEditorForm()
+    {
+        SectionHeading(editingCardId is null ? "Create a Card" : "Edit Card");
         ImGui.TextUnformatted("Deck author");
         ImGui.SameLine();
         var editedAuthor = selectedDeck.Author;
@@ -418,7 +511,6 @@ public sealed class MainWindow : Window, IDisposable
                 if (ImGui.Selectable(ActivityLabel(activity), activityType == activity)) activityType = activity;
             ImGui.EndCombo();
         }
-        DrawArtworkPreview();
         ImGui.TextUnformatted("Artwork");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(280 * ImGuiHelpers.GlobalScale);
@@ -507,40 +599,6 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.SameLine();
             if (ImGui.Button("Cancel")) ClearEditor();
         }
-        GoldSeparator();
-        ImGui.TextColored(ThemeGoldBright, $"EXISTING CARDS ({selectedDeck.Cards.Count})");
-        if (ImGui.BeginChild("CardList", Vector2.Zero, false))
-        {
-            foreach (var card in selectedDeck.Cards.ToList())
-            {
-                ImGui.TextUnformatted(card.Title);
-                ImGui.SameLine();
-                ImGui.TextDisabled(ActivityLabel(card.Activity));
-                ImGui.SameLine();
-                ImGui.TextDisabled($"Art: {ArtworkLabel(card)}");
-                DrawCategoryLabelsInline(card.Category);
-                if (card.Keyword is CardKeyword keyword)
-                {
-                    ImGui.SameLine();
-                    ImGui.TextColored(new Vector4(0.82f, 0.72f, 0.39f, 1f), KeywordLabel(keyword));
-                }
-                ImGui.SameLine();
-                ImGui.PushTextWrapPos(ImGui.GetWindowWidth() - 140 * ImGuiHelpers.GlobalScale);
-                ImGui.TextWrapped(card.Text);
-                ImGui.PopTextWrapPos();
-                if (!string.IsNullOrWhiteSpace(card.FlavorText))
-                {
-                    ImGui.TextColored(new Vector4(.62f, .55f, .44f, 1f), $"Flavor: {card.FlavorText}");
-                }
-                ImGui.PushID(card.Id.ToString());
-                if (ImGui.SmallButton("Edit")) BeginEdit(card);
-                ImGui.SameLine();
-                if (ImGui.SmallButton("Delete")) pendingDeleteCardId = card.Id;
-                ImGui.PopID();
-                ImGui.Separator();
-            }
-        }
-        ImGui.EndChild();
     }
 
     private void DrawArtworkPreview()
