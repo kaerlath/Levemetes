@@ -46,6 +46,15 @@ public sealed class DirectGameService : IDisposable
     private bool gameStarted;
     private int currentTurnIndex = -1;
     private PendingVolunteer? pendingVolunteer;
+    private bool scoringEnabled;
+    private string scoringDrawer = string.Empty;
+    private readonly Dictionary<string, int> scores = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> roundVotes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> eligibleScoreVoters = new(StringComparer.OrdinalIgnoreCase);
+    private int eligibleScoreVoterCount;
+    private readonly List<string> tieBreakCandidates = [];
+    private readonly HashSet<string> eligibleTieBreakVoters = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> tieBreakVotes = new(StringComparer.OrdinalIgnoreCase);
 
     public DirectGameService(Action<Exception, string>? logWarning = null) => this.logWarning = logWarning;
 
@@ -59,6 +68,15 @@ public sealed class DirectGameService : IDisposable
     public IReadOnlyList<string> TurnOrder { get { lock (stateLock) return turnOrder.ToArray(); } }
     public bool GameStarted { get { lock (stateLock) return gameStarted; } }
     public string CurrentPlayer { get { lock (stateLock) return CurrentPlayerLocked(); } }
+    public bool ScoringEnabled { get { lock (stateLock) return scoringEnabled; } }
+    public bool AwaitingScores { get { lock (stateLock) return scoringEnabled && scoringDrawer.Length > 0; } }
+    public string ScoringDrawer { get { lock (stateLock) return scoringDrawer; } }
+    public IReadOnlyDictionary<string, int> Scores { get { lock (stateLock) return new Dictionary<string, int>(scores); } }
+    public IReadOnlyCollection<string> SubmittedVoters { get { lock (stateLock) return roundVotes.Keys.ToArray(); } }
+    public int EligibleScoreVoterCount { get { lock (stateLock) return eligibleScoreVoterCount; } }
+    public IReadOnlyList<string> TieBreakCandidates { get { lock (stateLock) return tieBreakCandidates.ToArray(); } }
+    public IReadOnlyCollection<string> SubmittedTieBreakVoters { get { lock (stateLock) return tieBreakVotes.Keys.ToArray(); } }
+    public bool AwaitingTieBreak { get { lock (stateLock) return tieBreakCandidates.Count > 0; } }
 
     public static async Task<string> DiscoverPublicAddressAsync(CancellationToken token = default)
     {
@@ -69,7 +87,7 @@ public sealed class DirectGameService : IDisposable
         return value;
     }
 
-    public void StartHosting(string name, string publicAddress, int listenPort, Deck deck, CardCategory selectedCategory, byte[] deckBundle)
+    public void StartHosting(string name, string publicAddress, int listenPort, Deck deck, CardCategory selectedCategory, byte[] deckBundle, bool enableScoring = false)
     {
         Stop();
         name = ValidateName(name);
@@ -90,6 +108,8 @@ public sealed class DirectGameService : IDisposable
         advertisedHost = publicAddress;
         port = listenPort;
         category = selectedCategory;
+        scoringEnabled = enableScoring;
+        scores.Clear(); scores[name] = 0; roundVotes.Clear(); scoringDrawer = string.Empty;
         cardKeywords.Clear();
         foreach (var card in deck.Cards) cardKeywords[card.Id] = card.Keyword;
         ResetPile(deck);
@@ -123,6 +143,60 @@ public sealed class DirectGameService : IDisposable
             _ = hostPeer.SendJsonAsync(PacketType.DrawRequest, new DrawRequest(playerName), cancellation?.Token ?? CancellationToken.None);
     }
 
+    public void SubmitScore(int value)
+    {
+        if (value is < 0 or > 5) throw new InvalidOperationException("Scores must be between 0 and 5.");
+        if (IsHost) HostScore(playerName, value);
+        else if (Mode == DirectGameMode.Joined && hostPeer is not null)
+            _ = hostPeer.SendJsonAsync(PacketType.ScoreRequest, new ScoreRequest(value), cancellation?.Token ?? CancellationToken.None);
+    }
+
+    public void SubmitTieBreakVote(string candidate)
+    {
+        if (IsHost) HostTieBreakVote(playerName, candidate);
+        else if (Mode == DirectGameMode.Joined && hostPeer is not null)
+            _ = hostPeer.SendJsonAsync(PacketType.TieBreakVote, new TieBreakVoteRequest(candidate), cancellation?.Token ?? CancellationToken.None);
+    }
+
+    public void EndGame()
+    {
+        if (!IsHost) throw new InvalidOperationException("Only the host can end the game.");
+        GameResultsNotice? result = null;
+        TieBreakStateNotice? tieBreak = null;
+        lock (stateLock)
+        {
+            gameStarted = false;
+            scoringDrawer = string.Empty;
+            eligibleScoreVoters.Clear();
+            eligibleScoreVoterCount = 0;
+            if (!scoringEnabled)
+            {
+                result = new GameResultsNotice(new Dictionary<string, int>(), []);
+                tieBreakCandidates.Clear(); eligibleTieBreakVoters.Clear(); tieBreakVotes.Clear();
+                goto FinishedEnding;
+            }
+            var best = scores.Count == 0 ? 0 : scores.Values.Max();
+            var leaders = scores.Where(pair => pair.Value == best).Select(pair => pair.Key).ToArray();
+            var voters = ConnectedNamesLocked().Where(name => !leaders.Contains(name, StringComparer.OrdinalIgnoreCase)).ToArray();
+            if (scoringEnabled && leaders.Length > 1 && voters.Length > 0)
+            {
+                tieBreakCandidates.Clear(); tieBreakCandidates.AddRange(leaders);
+                eligibleTieBreakVoters.Clear(); eligibleTieBreakVoters.UnionWith(voters);
+                tieBreakVotes.Clear();
+                tieBreak = MakeTieBreakStateLocked();
+            }
+            else result = MakeGameResultsLocked(leaders);
+        FinishedEnding:;
+        }
+        if (tieBreak is not null)
+        {
+            BroadcastJson(PacketType.TieBreakState, tieBreak);
+            events.Enqueue(new DirectGameEvent(DirectGameEventType.TieBreakStarted, "A first-place tie needs a deciding vote."));
+        }
+        else if (result is not null) PublishGameResults(result);
+        BroadcastGameState();
+    }
+
     public void Volunteer(Guid resolutionId)
     {
         if (IsHost) ResolveVolunteer(resolutionId, playerName, false);
@@ -146,6 +220,9 @@ public sealed class DirectGameService : IDisposable
             }
             turnOrder.Clear();
             turnOrder.AddRange(names);
+            foreach (var name in names) scores[name] = 0;
+            scoringDrawer = string.Empty; roundVotes.Clear(); eligibleScoreVoters.Clear(); eligibleScoreVoterCount = 0;
+            tieBreakCandidates.Clear(); eligibleTieBreakVoters.Clear(); tieBreakVotes.Clear();
             currentTurnIndex = 0;
             gameStarted = true;
             state = MakeGameStateLocked();
@@ -174,6 +251,7 @@ public sealed class DirectGameService : IDisposable
             state = MakeGameStateLocked();
         }
         removed?.Dispose();
+        ReconcilePlayerDeparture(name);
         BroadcastPlayerList();
         BroadcastJson(PacketType.GameState, state);
         events.Enqueue(new DirectGameEvent(DirectGameEventType.Status, $"{name} was removed from the game."));
@@ -212,6 +290,8 @@ public sealed class DirectGameService : IDisposable
             turnOrder.Clear();
             gameStarted = false;
             currentTurnIndex = -1;
+            scoringEnabled = false; scoringDrawer = string.Empty; scores.Clear(); roundVotes.Clear(); eligibleScoreVoters.Clear(); eligibleScoreVoterCount = 0;
+            tieBreakCandidates.Clear(); eligibleTieBreakVoters.Clear(); tieBreakVotes.Clear();
         }
         if (sessionSecret is not null) CryptographicOperations.ZeroMemory(sessionSecret);
         sessionSecret = null;
@@ -265,9 +345,10 @@ public sealed class DirectGameService : IDisposable
                 if (peers.Any(item => item.Name.Equals(peer.Name, StringComparison.OrdinalIgnoreCase)) || playerName.Equals(peer.Name, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException("That player name is already in use in this room.");
                 peers.Add(peer);
+                scores.TryAdd(peer.Name, 0);
                 UpdatePlayerNamesLocked();
             }
-            await peer.SendJsonAsync(PacketType.Welcome, new Welcome(category, remaining), token);
+            await peer.SendJsonAsync(PacketType.Welcome, new Welcome(category, remaining, scoringEnabled), token);
             await peer.SendAsync(PacketType.DeckBundle, lockedBundle!, token);
             GameStateNotice currentState;
             lock (stateLock) currentState = MakeGameStateLocked();
@@ -293,6 +374,7 @@ public sealed class DirectGameService : IDisposable
                     if (gameStarted && CurrentPlayerLocked().Equals(peer.Name, StringComparison.OrdinalIgnoreCase)) AdvanceTurnLocked();
                 }
                 peer.Dispose();
+                ReconcilePlayerDeparture(peer.Name);
                 BroadcastPlayerList();
                 BroadcastGameState();
                 if (!string.IsNullOrWhiteSpace(peer.Name)) events.Enqueue(new DirectGameEvent(DirectGameEventType.Status, $"{peer.Name} left the room."));
@@ -308,6 +390,8 @@ public sealed class DirectGameService : IDisposable
         {
             var packet = await peer.ReceiveAsync(token);
             if (packet.Type == PacketType.DrawRequest) HostDraw(peer.Name);
+            else if (packet.Type == PacketType.ScoreRequest) HostScore(peer.Name, Deserialize<ScoreRequest>(packet.Payload).Value);
+            else if (packet.Type == PacketType.TieBreakVote) HostTieBreakVote(peer.Name, Deserialize<TieBreakVoteRequest>(packet.Payload).Candidate);
             else if (packet.Type == PacketType.VolunteerRequest)
             {
                 var request = Deserialize<VolunteerRequest>(packet.Payload);
@@ -338,7 +422,7 @@ public sealed class DirectGameService : IDisposable
             if (welcomePacket.Type == PacketType.Error) throw new InvalidOperationException(Deserialize<ErrorNotice>(welcomePacket.Payload).Message);
             if (welcomePacket.Type != PacketType.Welcome) throw new InvalidDataException("The host returned an invalid welcome message.");
             var welcome = Deserialize<Welcome>(welcomePacket.Payload);
-            lock (stateLock) { category = welcome.Category; remaining = welcome.Remaining; mode = DirectGameMode.Joined; }
+            lock (stateLock) { category = welcome.Category; remaining = welcome.Remaining; scoringEnabled = welcome.ScoringEnabled; mode = DirectGameMode.Joined; }
             var deckPacket = await peer.ReceiveAsync(token);
             if (deckPacket.Type != PacketType.DeckBundle) throw new InvalidDataException("The host did not send a deck.");
             events.Enqueue(new DirectGameEvent(DirectGameEventType.DeckReceived, "The host deck was received.", deckPacket.Payload, Remaining: welcome.Remaining, Category: welcome.Category));
@@ -406,6 +490,16 @@ public sealed class DirectGameService : IDisposable
                         events.Enqueue(new DirectGameEvent(DirectGameEventType.RandomTargetSelected,
                             $"{target.SelectedPlayer} was randomly chosen for {target.Drawer}'s card.", SelectedPlayer: target.SelectedPlayer));
                         break;
+                    case PacketType.ScoreState:
+                        ApplyScoreState(Deserialize<ScoreStateNotice>(packet.Payload));
+                        break;
+                    case PacketType.GameResults:
+                        var results = Deserialize<GameResultsNotice>(packet.Payload);
+                        ApplyGameResults(results);
+                        break;
+                    case PacketType.TieBreakState:
+                        ApplyTieBreakState(Deserialize<TieBreakStateNotice>(packet.Payload));
+                        break;
                 }
             }
         }
@@ -424,6 +518,7 @@ public sealed class DirectGameService : IDisposable
         lock (stateLock)
         {
             if (pendingVolunteer is not null) { SendDrawError(drawer, "Resolve the current BLIND VOLUNTEER card before drawing again."); return; }
+            if (scoringEnabled && scoringDrawer.Length > 0) { SendDrawError(drawer, "Wait for all eligible players to submit a score."); return; }
             if (!gameStarted) { events.Enqueue(new DirectGameEvent(DirectGameEventType.Error, "The host has not started the game yet.")); return; }
             var current = CurrentPlayerLocked();
             if (!drawer.Equals(current, StringComparison.OrdinalIgnoreCase))
@@ -435,7 +530,7 @@ public sealed class DirectGameService : IDisposable
             cardId = drawPile.Dequeue();
             remaining = drawPile.Count;
             count = remaining;
-            AdvanceTurnLocked();
+            if (!scoringEnabled) AdvanceTurnLocked();
         }
         var result = new DrawResult(Guid.NewGuid(), cardId, drawer, count);
         cardKeywords.TryGetValue(cardId, out var keyword);
@@ -448,8 +543,162 @@ public sealed class DirectGameService : IDisposable
             events.Enqueue(new DirectGameEvent(DirectGameEventType.CardDrawn, $"{drawer} drew a card.", CardId: cardId, Drawer: drawer, Remaining: count));
             BroadcastJson(PacketType.DrawResult, result);
             if (keyword == CardKeyword.Random) ResolveRandomTarget(drawer);
+            if (scoringEnabled) BeginScoring(drawer);
         }
         BroadcastGameState();
+    }
+
+    private void HostScore(string voter, int value)
+    {
+        ScoreStateNotice notice;
+        lock (stateLock)
+        {
+            if (!scoringEnabled || scoringDrawer.Length == 0) return;
+            if (voter.Equals(scoringDrawer, StringComparison.OrdinalIgnoreCase) || roundVotes.ContainsKey(voter)) return;
+            if (!eligibleScoreVoters.Contains(voter)) return;
+            roundVotes[voter] = Math.Clamp(value, 0, 5);
+            if (eligibleScoreVoters.All(name => roundVotes.ContainsKey(name)))
+            {
+                scores.TryAdd(scoringDrawer, 0);
+                scores[scoringDrawer] += roundVotes.Values.Sum();
+                scoringDrawer = string.Empty;
+                roundVotes.Clear();
+                eligibleScoreVoters.Clear();
+                eligibleScoreVoterCount = 0;
+                AdvanceTurnLocked();
+            }
+            notice = MakeScoreStateLocked();
+        }
+        BroadcastJson(PacketType.ScoreState, notice);
+        events.Enqueue(new DirectGameEvent(DirectGameEventType.ScoreStateChanged, notice.Drawer.Length == 0 ? "Scoring complete." : "Waiting for scores."));
+        BroadcastGameState();
+    }
+
+    private void HostTieBreakVote(string voter, string candidate)
+    {
+        GameResultsNotice? result = null;
+        TieBreakStateNotice? state = null;
+        lock (stateLock)
+        {
+            if (tieBreakCandidates.Count == 0 || !eligibleTieBreakVoters.Contains(voter) || tieBreakVotes.ContainsKey(voter)) return;
+            if (!tieBreakCandidates.Contains(candidate, StringComparer.OrdinalIgnoreCase)) return;
+            tieBreakVotes[voter] = candidate;
+            if (eligibleTieBreakVoters.All(name => tieBreakVotes.ContainsKey(name)))
+            {
+                var counts = tieBreakVotes.Values.GroupBy(name => name, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
+                var highest = counts.Values.Max();
+                var winners = tieBreakCandidates.Where(name => counts.GetValueOrDefault(name) == highest).ToArray();
+                result = MakeGameResultsLocked(winners);
+                tieBreakCandidates.Clear(); eligibleTieBreakVoters.Clear(); tieBreakVotes.Clear();
+            }
+            else state = MakeTieBreakStateLocked();
+        }
+        if (result is not null) PublishGameResults(result);
+        else if (state is not null)
+        {
+            BroadcastJson(PacketType.TieBreakState, state);
+            events.Enqueue(new DirectGameEvent(DirectGameEventType.TieBreakStarted, "Waiting for the remaining tie-break votes."));
+        }
+    }
+
+    private void ReconcilePlayerDeparture(string name)
+    {
+        ScoreStateNotice? scoreState = null;
+        GameResultsNotice? result = null;
+        lock (stateLock)
+        {
+            if (eligibleScoreVoters.Remove(name))
+            {
+                eligibleScoreVoterCount = eligibleScoreVoters.Count;
+                roundVotes.Remove(name);
+                if (scoringDrawer.Length > 0 && eligibleScoreVoters.All(voter => roundVotes.ContainsKey(voter)))
+                {
+                    scores[scoringDrawer] = scores.GetValueOrDefault(scoringDrawer) + roundVotes.Values.Sum();
+                    scoringDrawer = string.Empty; roundVotes.Clear(); eligibleScoreVoters.Clear(); eligibleScoreVoterCount = 0;
+                    AdvanceTurnLocked();
+                }
+                scoreState = MakeScoreStateLocked();
+            }
+            if (eligibleTieBreakVoters.Remove(name))
+            {
+                tieBreakVotes.Remove(name);
+                if (eligibleTieBreakVoters.Count == 0 || eligibleTieBreakVoters.All(voter => tieBreakVotes.ContainsKey(voter)))
+                {
+                    var winners = ResolveTieBreakWinnersLocked();
+                    result = MakeGameResultsLocked(winners);
+                    tieBreakCandidates.Clear(); eligibleTieBreakVoters.Clear(); tieBreakVotes.Clear();
+                }
+            }
+        }
+        if (scoreState is not null)
+        {
+            BroadcastJson(PacketType.ScoreState, scoreState);
+            events.Enqueue(new DirectGameEvent(DirectGameEventType.ScoreStateChanged, scoreState.Drawer.Length == 0 ? "Scoring complete." : "Waiting for scores."));
+            BroadcastGameState();
+        }
+        if (result is not null) PublishGameResults(result);
+    }
+
+    private string[] ResolveTieBreakWinnersLocked()
+    {
+        if (tieBreakVotes.Count == 0) return tieBreakCandidates.ToArray();
+        var counts = tieBreakVotes.Values.GroupBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
+        var highest = counts.Values.Max();
+        return tieBreakCandidates.Where(name => counts.GetValueOrDefault(name) == highest).ToArray();
+    }
+
+    private TieBreakStateNotice MakeTieBreakStateLocked() => new(tieBreakCandidates.ToArray(), tieBreakVotes.Keys.ToArray(), eligibleTieBreakVoters.Count);
+    private GameResultsNotice MakeGameResultsLocked(IReadOnlyList<string> winners) => new(new Dictionary<string, int>(scores), winners);
+    private void ApplyTieBreakState(TieBreakStateNotice state)
+    {
+        lock (stateLock)
+        {
+            tieBreakCandidates.Clear(); tieBreakCandidates.AddRange(state.Candidates);
+            tieBreakVotes.Clear(); foreach (var voter in state.Submitted) tieBreakVotes[voter] = string.Empty;
+            eligibleTieBreakVoters.Clear();
+        }
+        events.Enqueue(new DirectGameEvent(DirectGameEventType.TieBreakStarted, "A first-place tie needs a deciding vote."));
+    }
+
+    private void PublishGameResults(GameResultsNotice result)
+    {
+        BroadcastJson(PacketType.GameResults, result);
+        ApplyGameResults(result);
+    }
+
+    private void ApplyGameResults(GameResultsNotice result)
+    {
+        lock (stateLock) { tieBreakCandidates.Clear(); eligibleTieBreakVoters.Clear(); tieBreakVotes.Clear(); }
+        events.Enqueue(new DirectGameEvent(DirectGameEventType.GameEnded, "The host ended the game.", Scores: result.Scores, Winners: result.Winners));
+    }
+
+    private IEnumerable<string> ConnectedNamesLocked() => new[] { playerName }.Concat(peers.Select(peer => peer.Name));
+    private void BeginScoring(string drawer)
+    {
+        ScoreStateNotice notice;
+        lock (stateLock)
+        {
+            scoringDrawer = drawer;
+            roundVotes.Clear();
+            eligibleScoreVoters.Clear();
+            eligibleScoreVoters.UnionWith(ConnectedNamesLocked().Where(name => !name.Equals(drawer, StringComparison.OrdinalIgnoreCase)));
+            eligibleScoreVoterCount = eligibleScoreVoters.Count;
+            if (eligibleScoreVoters.Count == 0) { scoringDrawer = string.Empty; AdvanceTurnLocked(); }
+            notice = MakeScoreStateLocked();
+        }
+        BroadcastJson(PacketType.ScoreState, notice);
+        events.Enqueue(new DirectGameEvent(DirectGameEventType.ScoreStateChanged, notice.Drawer.Length == 0 ? "Scoring complete." : "Waiting for scores."));
+        BroadcastGameState();
+    }
+
+    private ScoreStateNotice MakeScoreStateLocked() => new(scoringEnabled, scoringDrawer, new Dictionary<string, int>(scores), roundVotes.Keys.ToArray(), eligibleScoreVoterCount);
+    private void BroadcastScoreState() => BroadcastJson(PacketType.ScoreState, MakeScoreStateLocked());
+    private void ApplyScoreState(ScoreStateNotice state)
+    {
+        lock (stateLock) { scoringEnabled = state.Enabled; scoringDrawer = state.Drawer; scores.Clear(); foreach (var pair in state.Scores) scores[pair.Key] = pair.Value; roundVotes.Clear(); foreach (var name in state.Submitted) roundVotes[name] = 0; eligibleScoreVoters.Clear(); eligibleScoreVoterCount = state.EligibleCount; }
+        events.Enqueue(new DirectGameEvent(DirectGameEventType.ScoreStateChanged, scoringDrawer.Length == 0 ? "Scoring complete." : "Waiting for scores."));
     }
 
     private void StartBlindVolunteer(DrawResult draw)
@@ -516,6 +765,7 @@ public sealed class DirectGameService : IDisposable
                 : $"{result.SelectedPlayer} volunteered as the blind volunteer.",
             CardId: result.CardId, Drawer: result.Drawer, Remaining: result.Remaining,
             ResolutionId: resolutionId, SelectedPlayer: result.SelectedPlayer));
+        if (scoringEnabled) BeginScoring(result.Drawer);
     }
 
     private void ResolveRandomTarget(string drawer)
@@ -665,10 +915,10 @@ public sealed class DirectGameService : IDisposable
     }
     private static T Deserialize<T>(byte[] payload) => JsonSerializer.Deserialize<T>(payload) ?? throw new InvalidDataException("A direct-game message was invalid.");
 
-    private enum PacketType : byte { Join = 1, Welcome, DeckBundle, DrawRequest, DrawResult, PlayerList, Reset, Error, GameState, VolunteerRequest, VolunteerPrompt, VolunteerResolved, RandomTarget }
+    private enum PacketType : byte { Join = 1, Welcome, DeckBundle, DrawRequest, DrawResult, PlayerList, Reset, Error, GameState, VolunteerRequest, VolunteerPrompt, VolunteerResolved, RandomTarget, ScoreRequest, ScoreState, GameResults, TieBreakVote, TieBreakState }
     private sealed record Invite(string Host, int Port, Guid SessionId, string Secret);
     private sealed record JoinRequest(string PlayerName);
-    private sealed record Welcome(CardCategory Category, int Remaining);
+    private sealed record Welcome(CardCategory Category, int Remaining, bool ScoringEnabled);
     private sealed record DrawRequest(string PlayerName);
     private sealed record DrawResult(Guid DrawId, Guid CardId, string Drawer, int Remaining);
     private sealed record PlayerListNotice(IReadOnlyList<string> Names);
@@ -679,6 +929,11 @@ public sealed class DirectGameService : IDisposable
     private sealed record VolunteerPrompt(Guid ResolutionId, string Drawer, long DeadlineUnixMilliseconds);
     private sealed record VolunteerResolved(Guid ResolutionId, Guid CardId, string Drawer, int Remaining, string SelectedPlayer, bool WasAutomatic);
     private sealed record RandomTargetNotice(string Drawer, string SelectedPlayer);
+    private sealed record ScoreRequest(int Value);
+    private sealed record ScoreStateNotice(bool Enabled, string Drawer, IReadOnlyDictionary<string, int> Scores, IReadOnlyList<string> Submitted, int EligibleCount);
+    private sealed record TieBreakVoteRequest(string Candidate);
+    private sealed record TieBreakStateNotice(IReadOnlyList<string> Candidates, IReadOnlyList<string> Submitted, int EligibleCount);
+    private sealed record GameResultsNotice(IReadOnlyDictionary<string, int> Scores, IReadOnlyList<string> Winners);
     private sealed record PendingVolunteer(Guid ResolutionId, Guid CardId, string Drawer, int Remaining, long DeadlineUnixMilliseconds);
     private sealed record SessionKeys(byte[] HostToClient, byte[] ClientToHost);
 
@@ -746,7 +1001,8 @@ public sealed class DirectGameService : IDisposable
 }
 
 public enum DirectGameMode { Disconnected, Connecting, Hosting, Joined }
-public enum DirectGameEventType { Status, Error, DeckReceived, CardDrawn, Reset, PlayerListChanged, GameStarted, GameStateChanged, VolunteerPrompt, VolunteerResolved, RandomTargetSelected }
+public enum DirectGameEventType { Status, Error, DeckReceived, CardDrawn, Reset, PlayerListChanged, GameStarted, GameStateChanged, VolunteerPrompt, VolunteerResolved, RandomTargetSelected, ScoreStateChanged, TieBreakStarted, GameEnded }
 public sealed record DirectGameEvent(DirectGameEventType Type, string Message, byte[]? Bundle = null, Guid? CardId = null,
     string? Drawer = null, int Remaining = 0, CardCategory Category = CardCategory.None, Guid? ResolutionId = null,
-    long DeadlineUnixMilliseconds = 0, string? SelectedPlayer = null);
+    long DeadlineUnixMilliseconds = 0, string? SelectedPlayer = null, IReadOnlyDictionary<string, int>? Scores = null,
+    IReadOnlyList<string>? Winners = null);

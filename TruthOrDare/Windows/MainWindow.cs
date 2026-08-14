@@ -81,6 +81,9 @@ public sealed class MainWindow : Window, IDisposable
     private long volunteerDeadlineUnixMilliseconds;
     private string volunteerDrawer = string.Empty;
     private string cardSearchText = string.Empty;
+    private bool directScoringEnabled;
+    private IReadOnlyDictionary<string, int>? finalScores;
+    private IReadOnlyList<string>? finalWinners;
 
     public MainWindow(Configuration configuration, DeckStore store, DirectGameService directGame, Action<Configuration> saveConfiguration,
         string cardBackPath, string templateDirectory, string artworkDirectory)
@@ -138,14 +141,19 @@ public sealed class MainWindow : Window, IDisposable
         if (ImGui.BeginTabBar("MainTabs"))
         {
             var playFlags = requestPlayTab ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
-            if (ImGui.BeginTabItem("Play", playFlags)) { requestPlayTab = false; DrawPlayTab(); ImGui.EndTabItem(); }
-            if (ImGui.BeginTabItem("Cards")) { DrawCardsTab(); ImGui.EndTabItem(); }
-            if (ImGui.BeginTabItem("Decks & Sharing")) { DrawDecksTab(); ImGui.EndTabItem(); }
-            if (ImGui.BeginTabItem("Direct Private Game")) { DrawDirectGameTab(); ImGui.EndTabItem(); }
+            if (ImGui.BeginTabItem("Play", playFlags))
+            { DrawActiveTabAccent(); requestPlayTab = false; DrawPlayTab(); ImGui.EndTabItem(); }
+            if (ImGui.BeginTabItem("Cards"))
+            { DrawActiveTabAccent(); DrawCardsTab(); ImGui.EndTabItem(); }
+            if (ImGui.BeginTabItem("Decks & Sharing"))
+            { DrawActiveTabAccent(); DrawDecksTab(); ImGui.EndTabItem(); }
+            if (ImGui.BeginTabItem("Direct Private Game"))
+            { DrawActiveTabAccent(); DrawDirectGameTab(); ImGui.EndTabItem(); }
             ImGui.EndTabBar();
         }
         DrawStatus();
         DrawVolunteerPrompt();
+        DrawGameResultsPopup();
         DrawGameInstructionsButton();
         DrawConfirmations();
         fileDialogManager.Draw();
@@ -160,6 +168,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(9, 7) * scale);
         ImGui.PushStyleVar(ImGuiStyleVar.ItemInnerSpacing, new Vector2(7, 5) * scale);
         ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 4 * scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, 1.15f * scale);
         ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 6 * scale);
         ImGui.PushStyleVar(ImGuiStyleVar.PopupRounding, 6 * scale);
         ImGui.PushStyleVar(ImGuiStyleVar.TabRounding, 4 * scale);
@@ -169,7 +178,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(.025f, .024f, .030f, .98f));
         ImGui.PushStyleColor(ImGuiCol.ChildBg, ThemePanel);
         ImGui.PushStyleColor(ImGuiCol.PopupBg, new Vector4(.035f, .033f, .040f, .99f));
-        ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(ThemeGold.X, ThemeGold.Y, ThemeGold.Z, .72f));
+        ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(ThemeGold.X, ThemeGold.Y, ThemeGold.Z, .82f));
         ImGui.PushStyleColor(ImGuiCol.BorderShadow, new Vector4(0, 0, 0, .65f));
         ImGui.PushStyleColor(ImGuiCol.Text, ThemeText);
         ImGui.PushStyleColor(ImGuiCol.TextDisabled, new Vector4(.62f, .58f, .50f, 1f));
@@ -182,10 +191,10 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.PushStyleColor(ImGuiCol.Header, new Vector4(.28f, .08f, .12f, 1f));
         ImGui.PushStyleColor(ImGuiCol.HeaderHovered, new Vector4(.42f, .12f, .17f, 1f));
         ImGui.PushStyleColor(ImGuiCol.HeaderActive, ThemeBurgundyHover);
-        ImGui.PushStyleColor(ImGuiCol.Tab, new Vector4(.07f, .065f, .075f, 1f));
-        ImGui.PushStyleColor(ImGuiCol.TabHovered, ThemeBurgundyHover);
-        ImGui.PushStyleColor(ImGuiCol.TabActive, ThemeBurgundy);
-        ImGui.PushStyleColor(ImGuiCol.TabUnfocusedActive, new Vector4(.24f, .065f, .10f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.Tab, new Vector4(.045f, .043f, .050f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.TabHovered, new Vector4(.38f, .10f, .15f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.TabActive, new Vector4(.40f, .075f, .13f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.TabUnfocusedActive, new Vector4(.34f, .065f, .11f, 1f));
         ImGui.PushStyleColor(ImGuiCol.CheckMark, ThemeGoldBright);
         ImGui.PushStyleColor(ImGuiCol.SliderGrab, ThemeGold);
         ImGui.PushStyleColor(ImGuiCol.SliderGrabActive, ThemeGoldBright);
@@ -204,7 +213,7 @@ public sealed class MainWindow : Window, IDisposable
     private static void PopLevemetesTheme()
     {
         ImGui.PopStyleColor(33);
-        ImGui.PopStyleVar(11);
+        ImGui.PopStyleVar(12);
     }
 
     private static void DrawWindowTitle()
@@ -226,6 +235,23 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.PopStyleColor();
     }
 
+    private static void DrawActiveTabAccent()
+    {
+        var scale = ImGuiHelpers.GlobalScale;
+        var drawList = ImGui.GetWindowDrawList();
+        var minimum = ImGui.GetItemRectMin();
+        var maximum = ImGui.GetItemRectMax();
+        var gold = ImGui.ColorConvertFloat4ToU32(new Vector4(.84f, .65f, .27f, 1f));
+        drawList.AddRect(minimum + new Vector2(scale), maximum - new Vector2(scale, 0), gold,
+            4 * scale, ImDrawFlags.None, 1.4f * scale);
+        var center = new Vector2((minimum.X + maximum.X) / 2, maximum.Y + 2.5f * scale);
+        var radius = 3.5f * scale;
+        drawList.AddQuadFilled(new Vector2(center.X, center.Y - radius), new Vector2(center.X + radius, center.Y),
+            new Vector2(center.X, center.Y + radius), new Vector2(center.X - radius, center.Y), gold);
+        drawList.AddCircleFilled(center, 1.15f * scale,
+            ImGui.ColorConvertFloat4ToU32(new Vector4(.98f, .88f, .56f, 1f)));
+    }
+
     private static void SectionHeading(string title)
     {
         ImGui.Spacing();
@@ -233,6 +259,33 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SameLine();
         ImGui.Separator();
         ImGui.Spacing();
+    }
+
+    private static void FormSectionHeading(string title)
+    {
+        ImGui.Spacing();
+        var start = ImGui.GetCursorScreenPos();
+        ImGui.TextColored(ThemeGoldBright, $"✦ {title}");
+        var textEnd = ImGui.GetItemRectMax();
+        var lineY = (ImGui.GetItemRectMin().Y + textEnd.Y) / 2;
+        var lineStart = textEnd.X + 8 * ImGuiHelpers.GlobalScale;
+        var lineEnd = ImGui.GetWindowPos().X + ImGui.GetWindowContentRegionMax().X;
+        if (lineEnd > lineStart)
+            ImGui.GetWindowDrawList().AddLine(new Vector2(lineStart, lineY), new Vector2(lineEnd, lineY),
+                ImGui.ColorConvertFloat4ToU32(new Vector4(ThemeGold.X, ThemeGold.Y, ThemeGold.Z, .52f)),
+                ImGuiHelpers.GlobalScale);
+    }
+
+    private static void DrawCharacterCounter(int used, int maximum, string? note = null)
+    {
+        var text = $"{used} / {maximum} used  •  {Math.Max(0, maximum - used)} remaining" +
+            (string.IsNullOrWhiteSpace(note) ? string.Empty : $"  •  {note}");
+        var width = ImGui.CalcTextSize(text).X;
+        ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(), ImGui.GetWindowContentRegionMax().X - width));
+        var nearLimit = used >= maximum * .9f;
+        ImGui.TextColored(nearLimit
+            ? new Vector4(1f, .55f, .32f, 1f)
+            : new Vector4(.62f, .55f, .42f, 1f), text);
     }
 
     private void DrawDeckSelector()
@@ -256,6 +309,12 @@ public sealed class MainWindow : Window, IDisposable
         if (!string.IsNullOrWhiteSpace(selectedDeck.Author))
         {
             ImGui.TextDisabled($"by {selectedDeck.Author}");
+            ImGui.SameLine();
+        }
+        var deckDate = selectedDeck.LastEditedAtUtc ?? selectedDeck.ImportedAtUtc;
+        if (deckDate is DateTimeOffset timestamp)
+        {
+            ImGui.TextDisabled($"• {(selectedDeck.LastEditedAtUtc is null ? "Imported" : "Updated")} {timestamp.ToLocalTime():MMM d, yyyy}");
             ImGui.SameLine();
         }
         ImGui.TextDisabled($"• {(directGame.IsConnected ? directGame.Remaining : session.Remaining)} remaining");
@@ -306,8 +365,16 @@ public sealed class MainWindow : Window, IDisposable
             if (!directGame.IsHost) ImGui.TextDisabled("Only the host can Shuffle / Reset the shared deck.");
         }
         ImGui.Dummy(new Vector2(0, ImGui.GetTextLineHeightWithSpacing() * 2));
-        var width = MathF.Min(ImGui.GetContentRegionAvail().X, 430 * ImGuiHelpers.GlobalScale);
-        var cardSize = new Vector2(width, width * 1.48f);
+        if (directGame.IsConnected && !string.IsNullOrWhiteSpace(directDrawer))
+        {
+            var drawerLabel = $"{directDrawer} drew this card";
+            ImGui.SetWindowFontScale(1.15f);
+            CenteredText(drawerLabel, ThemeGoldBright);
+            ImGui.SetWindowFontScale(1f);
+            ImGui.Spacing();
+        }
+        var width = MathF.Min(ImGui.GetContentRegionAvail().X, 500 * ImGuiHelpers.GlobalScale);
+        var cardSize = new Vector2(width, width * 1.30f);
         ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(), (ImGui.GetContentRegionMax().X - width) / 2));
         ImGui.PushStyleVar(ImGuiStyleVar.ChildBorderSize, 0);
         ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 12 * ImGuiHelpers.GlobalScale);
@@ -341,6 +408,46 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.PopStyleColor(2);
         ImGui.PopStyleVar(3);
 
+        if (directGame.IsConnected && directGame.ScoringEnabled)
+        {
+            ImGui.Spacing();
+            FormSectionHeading("SCORING");
+            var local = GetLocalCharacterLabel() ?? string.Empty;
+            if (directGame.AwaitingScores)
+            {
+                ImGui.TextUnformatted($"Scoring {directGame.ScoringDrawer}'s turn • {directGame.SubmittedVoters.Count}/{directGame.EligibleScoreVoterCount} submitted");
+                var mayVote = !local.Equals(directGame.ScoringDrawer, StringComparison.OrdinalIgnoreCase) &&
+                    !directGame.SubmittedVoters.Contains(local, StringComparer.OrdinalIgnoreCase);
+                if (!mayVote) ImGui.BeginDisabled();
+                for (var score = 0; score <= 5; score++)
+                {
+                    if (score > 0) ImGui.SameLine();
+                    if (ImGui.Button(score.ToString(), new Vector2(38, 32) * ImGuiHelpers.GlobalScale)) directGame.SubmitScore(score);
+                }
+                if (!mayVote) ImGui.EndDisabled();
+            }
+            foreach (var pair in directGame.Scores.OrderByDescending(pair => pair.Value))
+                ImGui.TextDisabled($"{pair.Key}: {pair.Value}");
+        }
+
+        if (directGame.IsConnected && directGame.AwaitingTieBreak)
+        {
+            ImGui.Spacing();
+            FormSectionHeading("TIE-BREAK VOTE");
+            ImGui.TextWrapped("Players outside the tie may choose the winner. If the deciding vote remains tied, victory is shared.");
+            var local = GetLocalCharacterLabel() ?? string.Empty;
+            var mayVote = !directGame.TieBreakCandidates.Contains(local, StringComparer.OrdinalIgnoreCase) &&
+                !directGame.SubmittedTieBreakVoters.Contains(local, StringComparer.OrdinalIgnoreCase);
+            if (!mayVote) ImGui.BeginDisabled();
+            foreach (var candidate in directGame.TieBreakCandidates)
+            {
+                if (ImGui.Button($"Vote for {candidate}")) directGame.SubmitTieBreakVote(candidate);
+                ImGui.SameLine();
+            }
+            ImGui.NewLine();
+            if (!mayVote) ImGui.EndDisabled();
+        }
+
         ImGui.Dummy(new Vector2(0, ImGui.GetTextLineHeightWithSpacing()));
         var copyButtonSize = new Vector2(190, 34) * ImGuiHelpers.GlobalScale;
         ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(),
@@ -357,7 +464,7 @@ public sealed class MainWindow : Window, IDisposable
         var localPlayer = GetLocalCharacterLabel();
         var directTurnReady = !directGame.IsConnected ||
             (directGame.GameStarted && string.Equals(directGame.CurrentPlayer, localPlayer, StringComparison.OrdinalIgnoreCase));
-        var canDraw = categoryCount > 0 && (directGame.IsConnected ? directGame.Remaining : session.Remaining) > 0 && directTurnReady;
+        var canDraw = categoryCount > 0 && (directGame.IsConnected ? directGame.Remaining : session.Remaining) > 0 && directTurnReady && !directGame.AwaitingScores;
         var buttonGap = 12 * ImGuiHelpers.GlobalScale;
         var availableWidth = ImGui.GetContentRegionAvail().X;
         var actionButtonWidth = MathF.Min(210 * ImGuiHelpers.GlobalScale, (availableWidth - buttonGap) / 2);
@@ -382,6 +489,13 @@ public sealed class MainWindow : Window, IDisposable
         if (directGame.IsConnected && !directGame.IsHost) ImGui.EndDisabled();
         if (directGame.IsConnected && !directGame.IsHost && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
             ImGui.SetTooltip("Only the host can shuffle and reset the shared deck.");
+        if (directGame.IsConnected)
+        {
+            ImGui.Spacing();
+            if (!directGame.IsHost) ImGui.BeginDisabled();
+            if (ImGui.Button("End Game", new Vector2(150, 36) * ImGuiHelpers.GlobalScale)) directGame.EndGame();
+            if (!directGame.IsHost) ImGui.EndDisabled();
+        }
         if (categoryCount > 0 && (directGame.IsConnected ? directGame.Remaining : session.Remaining) == 0)
             ImGui.TextDisabled(directGame.IsConnected && !directGame.IsHost ? "No shared cards remain. The host must shuffle and reset." : "No cards remain in this category. Shuffle / Reset to play again.");
         else if (directGame.IsConnected && !directGame.GameStarted)
@@ -426,7 +540,7 @@ public sealed class MainWindow : Window, IDisposable
         var height = 66 * ImGuiHelpers.GlobalScale;
         ImGui.BeginChild("CardEditorDeckHeader", new Vector2(0, height), true, ImGuiWindowFlags.NoScrollbar);
         var texture = Plugin.TextureProvider.GetFromFile(CurrentCardBackPath()).GetWrapOrDefault();
-        var thumbnail = new Vector2(34, 48) * ImGuiHelpers.GlobalScale;
+        var thumbnail = new Vector2(42, 48) * ImGuiHelpers.GlobalScale;
         if (texture is not null) ImGui.Image(texture.Handle, thumbnail);
         else ImGui.Dummy(thumbnail);
         ImGui.SameLine();
@@ -455,8 +569,8 @@ public sealed class MainWindow : Window, IDisposable
     {
         ImGui.TextColored(ThemeGoldBright, "LIVE CARD PREVIEW");
         ImGui.TextDisabled("Updates as you edit.");
-        var width = MathF.Min(ImGui.GetContentRegionAvail().X, 430 * ImGuiHelpers.GlobalScale);
-        var cardSize = new Vector2(width, width * 1.48f);
+        var width = MathF.Min(ImGui.GetContentRegionAvail().X, 500 * ImGuiHelpers.GlobalScale);
+        var cardSize = new Vector2(width, width * 1.30f);
         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + MathF.Max(0, (ImGui.GetContentRegionAvail().X - width) / 2));
         var preview = new Card
         {
@@ -531,8 +645,9 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SameLine();
         if (ImGui.Button("Save Author##CardEditor")) SaveDeck("Deck author saved.");
         GoldSeparator();
-        ImGui.TextColored(ThemeGoldBright, "CARD DETAILS");
+        FormSectionHeading("CARD DETAILS");
         ImGui.InputTextWithHint("##CardTitle", "Levemete title", ref cardTitle, MaxCardTitle + 1);
+        DrawCharacterCounter(cardTitle.Length, MaxCardTitle);
         ImGui.TextUnformatted("Activity type");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(250 * ImGuiHelpers.GlobalScale);
@@ -581,8 +696,7 @@ public sealed class MainWindow : Window, IDisposable
                 SetStatus("Custom artwork removed.");
             });
         }
-        GoldSeparator();
-        ImGui.TextColored(ThemeGoldBright, "INTENSITY — SELECT ONE OR MORE");
+        FormSectionHeading("INTENSITY — SELECT ONE OR MORE");
         foreach (var category in BasicCategories)
         {
             if (category != CardCategory.Sfw) ImGui.SameLine();
@@ -593,8 +707,7 @@ public sealed class MainWindow : Window, IDisposable
                 else cardCategory &= ~category;
             }
         }
-        GoldSeparator();
-        ImGui.TextColored(ThemeGoldBright, "OPTIONAL KEYWORD");
+        FormSectionHeading("OPTIONAL KEYWORD");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(190 * ImGuiHelpers.GlobalScale);
         if (ImGui.BeginCombo("##Keyword", cardKeyword is null ? "None" : KeywordLabel(cardKeyword.Value)))
@@ -604,7 +717,7 @@ public sealed class MainWindow : Window, IDisposable
                 if (ImGui.Selectable(KeywordLabel(keyword), cardKeyword == keyword)) cardKeyword = keyword;
             ImGui.EndCombo();
         }
-        ImGui.TextColored(ThemeGoldBright, "CARD TEXT");
+        FormSectionHeading("CARD TEXT");
         ImGui.SameLine();
         if (ImGui.Button("Bold")) AppendFormatting("b", "bold text");
         ImGui.SameLine();
@@ -615,10 +728,12 @@ public sealed class MainWindow : Window, IDisposable
         if (ImGui.Button("Center Line")) AppendFormatting("c", "centered sentence");
         ImGui.TextDisabled("Formatting buttons insert editable text at the end. Styles can be combined by nesting their tags.");
         ImGui.InputTextMultiline("##CardText", ref cardText, MaxCardText + 1, new Vector2(-1, 85 * ImGuiHelpers.GlobalScale));
-        ImGui.TextColored(ThemeGoldBright, "FLAVOR TEXT");
+        DrawCharacterCounter(cardText.Length, MaxCardText, "storage limit; preview auto-fits");
+        FormSectionHeading("FLAVOR TEXT");
         ImGui.TextDisabled("Shown separately at the bottom of the card. It is not included when card text is copied.");
         ImGui.InputTextMultiline("##FlavorText", ref flavorText, MaxFlavorText + 1,
             new Vector2(-1, 58 * ImGuiHelpers.GlobalScale));
+        DrawCharacterCounter(flavorText.Length, MaxFlavorText, "storage limit; preview auto-fits");
         var visibleCardText = StripFormatting(cardText);
         var valid = cardCategory != CardCategory.None && !string.IsNullOrWhiteSpace(cardTitle) && cardTitle.Trim().Length <= MaxCardTitle
             && !string.IsNullOrWhiteSpace(visibleCardText) && cardText.Trim().Length <= MaxCardText;
@@ -672,13 +787,12 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TextWrapped("Deck management and sharing are locked while Direct Private Game is connected. Leave the room to make changes.");
             return;
         }
-        ImGui.TextUnformatted("Create deck");
+        FormSectionHeading("CREATE DECK");
         ImGui.SetNextItemWidth(300 * ImGuiHelpers.GlobalScale);
         ImGui.InputTextWithHint("##NewDeck", "Deck name", ref newDeckName, MaxDeckName + 1);
         ImGui.SameLine();
         if (ImGui.Button("Create") && !string.IsNullOrWhiteSpace(newDeckName)) CreateDeck();
-        ImGui.Separator();
-        ImGui.TextUnformatted("Selected deck");
+        FormSectionHeading("SELECTED DECK");
         var editedName = selectedDeck.Name;
         ImGui.SetNextItemWidth(300 * ImGuiHelpers.GlobalScale);
         if (ImGui.InputText("Name", ref editedName, MaxDeckName + 1) && !string.IsNullOrWhiteSpace(editedName)) selectedDeck.Name = editedName;
@@ -694,13 +808,12 @@ public sealed class MainWindow : Window, IDisposable
         if (decks.Count <= 1) ImGui.BeginDisabled();
         if (ImGui.Button("Delete Deck")) requestDeleteDeck = true;
         if (decks.Count <= 1) ImGui.EndDisabled();
-        ImGui.Separator();
+        FormSectionHeading("IMPORT & MERGE");
         ImGui.TextWrapped("Import a portable .levemetesdeck bundle (including custom artwork) or a legacy JSON deck. Import it separately or merge only its new cards and images into this deck.");
         if (ImGui.Button("Import as New Deck...")) OpenImportDialog(merge: false);
         ImGui.SameLine();
         if (ImGui.Button("Merge into Selected...")) OpenImportDialog(merge: true);
-        ImGui.Spacing();
-        ImGui.TextUnformatted("Export selected deck");
+        FormSectionHeading("EXPORT SELECTED DECK");
         ImGui.TextDisabled("Creates one shareable file containing the deck and its custom artwork.");
         if (ImGui.Button("Export Selected Deck...")) OpenExportDialog();
         ImGui.SameLine();
@@ -754,8 +867,7 @@ public sealed class MainWindow : Window, IDisposable
             else
                 ImGui.TextColored(new Vector4(.45f, .9f, .55f, 1f), characterLabel);
 
-            ImGui.Spacing();
-            ImGui.TextUnformatted("Create a direct room");
+            FormSectionHeading("CREATE A DIRECT ROOM");
             ImGui.TextWrapped($"The currently selected deck and {CategoryLabel(playCategory)} draw pile will be locked and sent once to each joining player.");
             ImGui.SetNextItemWidth(300 * ImGuiHelpers.GlobalScale);
             ImGui.InputTextWithHint("Public address##DirectHost", "Public IP address or DNS name", ref directPublicAddress, 256);
@@ -764,6 +876,7 @@ public sealed class MainWindow : Window, IDisposable
             if (ImGui.Button(publicAddressDiscoveryTask is not null ? "Detecting..." : "Detect Public IP")) DiscoverPublicAddress();
             if (publicAddressDiscoveryTask is not null) ImGui.EndDisabled();
             ImGui.TextDisabled("Detection contacts api.ipify.org over HTTPS. You may still enter an address manually.");
+            ImGui.Checkbox("Enable optional scoring (0–5)", ref directScoringEnabled);
             ImGui.SetNextItemWidth(140 * ImGuiHelpers.GlobalScale);
             ImGui.InputInt("Listening port##DirectPort", ref directPort);
             if (characterLabel is null) ImGui.BeginDisabled();
@@ -771,8 +884,7 @@ public sealed class MainWindow : Window, IDisposable
             if (characterLabel is null) ImGui.EndDisabled();
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("May require Windows Firewall permission and router port forwarding.");
 
-            ImGui.Separator();
-            ImGui.TextUnformatted("Join a direct room");
+            FormSectionHeading("JOIN A DIRECT ROOM");
             ImGui.TextWrapped("Joining downloads the host's custom deck and artwork. Confirm that you trust the host and accept the room's possible content before joining.");
             ImGui.InputTextMultiline("##DirectInvitation", ref directInvitation, 2048,
                 new Vector2(-1, 70 * ImGuiHelpers.GlobalScale));
@@ -798,8 +910,7 @@ public sealed class MainWindow : Window, IDisposable
 
         if (directGame.IsHost)
         {
-            ImGui.Spacing();
-            ImGui.TextUnformatted("Private invitation");
+            FormSectionHeading("PRIVATE INVITATION");
             var invite = directGame.InviteText;
             ImGui.InputTextMultiline("##HostInvitation", ref invite, 2048,
                 new Vector2(-1, 70 * ImGuiHelpers.GlobalScale));
@@ -811,8 +922,7 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TextDisabled("The invitation contains a secret connection key. Anyone who has it may attempt to join while the room is open.");
         }
 
-        ImGui.Spacing();
-        ImGui.TextUnformatted($"Players ({directGame.Players.Count}/8)");
+        FormSectionHeading($"PLAYERS ({directGame.Players.Count}/8)");
         foreach (var name in directGame.Players)
         {
             ImGui.Bullet();
@@ -857,7 +967,7 @@ public sealed class MainWindow : Window, IDisposable
         TryAction(() =>
         {
             var bundle = store.ExportBundleBytes(selectedDeck);
-            directGame.StartHosting(characterLabel, directPublicAddress, directPort, selectedDeck, playCategory, bundle);
+            directGame.StartHosting(characterLabel, directPublicAddress, directPort, selectedDeck, playCategory, bundle, directScoringEnabled);
             directCurrentCard = null;
             directDrawer = string.Empty;
             SetStatus("Direct room created. You may need to allow Levemetes through Windows Firewall and forward the listening port on your router.");
@@ -987,6 +1097,18 @@ public sealed class MainWindow : Window, IDisposable
                     case DirectGameEventType.RandomTargetSelected:
                         SetStatus(gameEvent.Message);
                         break;
+                    case DirectGameEventType.ScoreStateChanged:
+                        SetStatus(gameEvent.Message);
+                        break;
+                    case DirectGameEventType.TieBreakStarted:
+                        SetStatus(gameEvent.Message);
+                        break;
+                    case DirectGameEventType.GameEnded:
+                        finalScores = gameEvent.Scores ?? new Dictionary<string, int>();
+                        finalWinners = gameEvent.Winners;
+                        ImGui.OpenPopup("Game Results");
+                        SetStatus(gameEvent.Message);
+                        break;
                 }
             }
             catch (Exception ex)
@@ -996,6 +1118,25 @@ public sealed class MainWindow : Window, IDisposable
                 directGame.Stop();
             }
         }
+    }
+
+    private void DrawGameResultsPopup()
+    {
+        if (!ImGui.BeginPopupModal("Game Results", ImGuiWindowFlags.AlwaysAutoResize)) return;
+        var results = finalScores?.OrderByDescending(pair => pair.Value).ToArray() ?? [];
+        if (results.Length == 0) ImGui.TextUnformatted("Game ended. Scoring was not enabled.");
+        else
+        {
+            var best = results[0].Value;
+            var winners = finalWinners?.ToArray() ?? results.Where(pair => pair.Value == best).Select(pair => pair.Key).ToArray();
+            ImGui.TextColored(ThemeGoldBright, winners.Length == 1
+                ? $"Winner: {winners[0]} — {best} points"
+                : $"Shared victory: {string.Join(" & ", winners)} — {best} points each");
+            GoldSeparator();
+            foreach (var pair in results) ImGui.TextUnformatted($"{pair.Key}: {pair.Value}");
+        }
+        if (ImGui.Button("Close")) { ImGui.CloseCurrentPopup(); finalScores = null; finalWinners = null; }
+        ImGui.EndPopup();
     }
 
     private void DrawStatus()
@@ -1354,9 +1495,9 @@ public sealed class MainWindow : Window, IDisposable
         if (artworkTexture is not null)
         {
             var artworkSize = new Vector2(
-                MathF.Min(cardSize.X * .87f, 330 * ImGuiHelpers.GlobalScale),
-                MathF.Min(cardSize.Y * .275f, 165 * ImGuiHelpers.GlobalScale));
-            var artworkPosition = new Vector2((cardSize.X - artworkSize.X) / 2f, cardSize.Y * .145f);
+                MathF.Min(cardSize.X * .88f, 440 * ImGuiHelpers.GlobalScale),
+                MathF.Min(cardSize.Y * .315f, 205 * ImGuiHelpers.GlobalScale));
+            var artworkPosition = new Vector2((cardSize.X - artworkSize.X) / 2f, cardSize.Y * .205f);
             ImGui.SetCursorPos(artworkPosition);
             ImGui.Image(artworkTexture.Handle, artworkSize, new Vector2(0, .165f), new Vector2(1, .835f));
             var minimum = ImGui.GetWindowPos() + artworkPosition;
@@ -1365,21 +1506,17 @@ public sealed class MainWindow : Window, IDisposable
                 5f * ImGuiHelpers.GlobalScale, ImDrawFlags.None, 2f * ImGuiHelpers.GlobalScale);
         }
 
-        DrawCenteredOverlayText(card.Title, cardSize.Y * 0.034f, 8f,
-            new Vector4(0.19f, 0.12f, 0.07f, 1f));
-        DrawCenteredOverlayTextFitted(ActivityLabel(card.Activity), cardSize.Y * 0.092f, 1f, cardSize.X * .78f,
-            new Vector4(0.28f, 0.20f, 0.10f, 1f));
-
         var windowPosition = ImGui.GetWindowPos();
+        DrawOrnamentalHeader(card, cardSize);
+
         var ink = CardInkColor(card.Category);
-        DrawCardContentPanel(windowPosition + new Vector2(cardSize.X * .065f, cardSize.Y * .425f),
-            new Vector2(cardSize.X * .87f, cardSize.Y * .31f), false);
-        DrawCardContentPanel(windowPosition + new Vector2(cardSize.X * .085f, cardSize.Y * .75f),
-            new Vector2(cardSize.X * .83f, cardSize.Y * .13f), true);
+        DrawCardContentPanel(windowPosition + new Vector2(cardSize.X * .055f, cardSize.Y * .535f),
+            new Vector2(cardSize.X * .89f, cardSize.Y * .205f), false);
+        DrawCardContentPanel(windowPosition + new Vector2(cardSize.X * .055f, cardSize.Y * .76f),
+            new Vector2(cardSize.X * .89f, cardSize.Y * .07f), true);
 
         if (card.Keyword is CardKeyword keyword)
-            DrawCenteredOverlayText(KeywordLabel(keyword), cardSize.Y * .402f, 0f,
-                new Vector4(0.45f, 0.30f, 0.10f, 1f));
+            DrawKeywordBadge(keyword, cardSize, cardSize.Y * .515f);
 
         DrawFormattedCardText(card.Text, cardSize, ink);
         if (!string.IsNullOrWhiteSpace(card.FlavorText))
@@ -1404,10 +1541,60 @@ public sealed class MainWindow : Window, IDisposable
             ImDrawFlags.None, ImGuiHelpers.GlobalScale);
     }
 
+    private static void DrawOrnamentalHeader(Card card, Vector2 cardSize)
+    {
+        var scale = ImGuiHelpers.GlobalScale;
+        var windowPosition = ImGui.GetWindowPos();
+        var drawList = ImGui.GetWindowDrawList();
+        var gold = ImGui.ColorConvertFloat4ToU32(new Vector4(.66f, .46f, .18f, .95f));
+        var centerX = windowPosition.X + cardSize.X / 2;
+        DrawCenteredOverlayTextFitted(card.Title, cardSize.Y * .118f, 10f, cardSize.X * .68f,
+            new Vector4(.18f, .10f, .045f, 1f));
+        var activity = ActivityLabel(card.Activity);
+        var activityScale = .98f;
+        var activitySize = ImGui.CalcTextSize(activity) * activityScale;
+        var activityY = windowPosition.Y + cardSize.Y * .169f;
+        var activityX = centerX - activitySize.X / 2;
+        var flourishGap = 10 * scale;
+        var flourishLength = cardSize.X * .09f;
+        drawList.AddLine(new Vector2(activityX - flourishGap - flourishLength, activityY + activitySize.Y / 2),
+            new Vector2(activityX - flourishGap, activityY + activitySize.Y / 2), gold, scale);
+        drawList.AddLine(new Vector2(activityX + activitySize.X + flourishGap, activityY + activitySize.Y / 2),
+            new Vector2(activityX + activitySize.X + flourishGap + flourishLength, activityY + activitySize.Y / 2), gold, scale);
+        var diamond = 3.2f * scale;
+        foreach (var x in new[] { activityX - flourishGap, activityX + activitySize.X + flourishGap })
+            drawList.AddQuadFilled(new Vector2(x, activityY + activitySize.Y / 2 - diamond),
+                new Vector2(x + diamond, activityY + activitySize.Y / 2),
+                new Vector2(x, activityY + activitySize.Y / 2 + diamond),
+                new Vector2(x - diamond, activityY + activitySize.Y / 2), gold);
+        DrawCenteredOverlayTextFitted(activity, cardSize.Y * .163f, 0f, cardSize.X * .55f,
+            new Vector4(.32f, .20f, .08f, 1f));
+    }
+
+    private static void DrawKeywordBadge(CardKeyword keyword, Vector2 cardSize, float y)
+    {
+        var label = KeywordLabel(keyword);
+        var scale = ImGuiHelpers.GlobalScale;
+        var textSize = ImGui.CalcTextSize(label);
+        var size = textSize + new Vector2(24, 9) * scale;
+        var position = ImGui.GetWindowPos() + new Vector2((cardSize.X - size.X) / 2, y);
+        var drawList = ImGui.GetWindowDrawList();
+        var fill = keyword switch
+        {
+            CardKeyword.BlindVolunteer => new Vector4(.20f, .32f, .42f, .98f),
+            CardKeyword.Choice => new Vector4(.24f, .38f, .25f, .98f),
+            _ => new Vector4(.42f, .18f, .22f, .98f),
+        };
+        var rounding = 4 * scale;
+        drawList.AddRectFilled(position, position + size, ImGui.ColorConvertFloat4ToU32(fill), rounding);
+        drawList.AddRect(position, position + size,
+            ImGui.ColorConvertFloat4ToU32(new Vector4(.92f, .79f, .48f, 1f)), rounding,
+            ImDrawFlags.None, 1.5f * scale);
+        drawList.AddText(position + (size - textSize) / 2, ImGui.ColorConvertFloat4ToU32(Vector4.One), label);
+    }
+
     private static void DrawIntensityFooter(CardCategory categories, Vector2 cardSize)
     {
-        var values = CategoriesIn(categories).ToArray();
-        if (values.Length == 0) return;
         var scale = ImGuiHelpers.GlobalScale;
         var windowPosition = ImGui.GetWindowPos();
         var plaqueTop = windowPosition + new Vector2(cardSize.X * .27f, cardSize.Y * .845f);
@@ -1423,28 +1610,38 @@ public sealed class MainWindow : Window, IDisposable
         drawList.AddText(plaqueTop + (plaqueSize - labelSize) / 2,
             ImGui.ColorConvertFloat4ToU32(new Vector4(.96f, .87f, .67f, 1f)), label);
 
-        var badgeY = cardSize.Y * .888f;
-        var gap = 5 * scale;
-        var widths = values.Select(value => CategoryBadgeSize(value).X).ToArray();
-        var total = widths.Sum() + MathF.Max(0, values.Length - 1) * gap;
-        var trayPadding = new Vector2(11, 6) * scale;
-        var badgeHeight = values.Select(value => CategoryBadgeSize(value).Y).Max();
-        var trayMinimum = windowPosition + new Vector2((cardSize.X - total) / 2, badgeY) - trayPadding;
-        var trayMaximum = trayMinimum + new Vector2(total, badgeHeight) + trayPadding * 2;
-        drawList.AddRectFilled(trayMinimum, trayMaximum,
-            ImGui.ColorConvertFloat4ToU32(new Vector4(.93f, .88f, .76f, .96f)), 5 * scale);
-        drawList.AddRect(trayMinimum, trayMaximum,
-            ImGui.ColorConvertFloat4ToU32(new Vector4(.58f, .41f, .17f, 1f)), 5 * scale,
-            ImDrawFlags.None, 1.8f * scale);
-        drawList.AddRect(trayMinimum + new Vector2(4 * scale), trayMaximum - new Vector2(4 * scale),
-            ImGui.ColorConvertFloat4ToU32(new Vector4(.73f, .59f, .35f, .55f)), 4 * scale,
-            ImDrawFlags.None, scale);
-        ImGui.SetCursorPos(new Vector2(MathF.Max(0, (cardSize.X - total) / 2), badgeY));
-        for (var index = 0; index < values.Length; index++)
+        var slotY = windowPosition.Y + cardSize.Y * .891f;
+        var slotWidth = cardSize.X * .178f;
+        var slotHeight = 24 * scale;
+        var centers = new[] { .21f, .405f, .595f, .785f };
+        for (var index = 0; index < BasicCategories.Length; index++)
         {
-            if (index > 0) ImGui.SameLine(0, gap);
-            DrawCategoryBadge(values[index]);
+            var category = BasicCategories[index];
+            var selected = categories.HasFlag(category);
+            var position = new Vector2(windowPosition.X + cardSize.X * centers[index] - slotWidth / 2, slotY);
+            DrawFixedCategorySlot(category, selected, position, new Vector2(slotWidth, slotHeight));
         }
+    }
+
+    private static void DrawFixedCategorySlot(CardCategory category, bool selected, Vector2 position, Vector2 size)
+    {
+        var scale = ImGuiHelpers.GlobalScale;
+        var drawList = ImGui.GetWindowDrawList();
+        var baseColor = CategoryColor(category);
+        var fill = selected
+            ? new Vector4(baseColor.X, baseColor.Y, baseColor.Z, 1f)
+            : new Vector4(baseColor.X * .48f, baseColor.Y * .48f, baseColor.Z * .48f, .78f);
+        var border = selected
+            ? new Vector4(.96f, .84f, .56f, 1f)
+            : new Vector4(.60f, .47f, .27f, .72f);
+        var rounding = 4 * scale;
+        drawList.AddRectFilled(position, position + size, ImGui.ColorConvertFloat4ToU32(fill), rounding);
+        drawList.AddRect(position, position + size, ImGui.ColorConvertFloat4ToU32(border), rounding,
+            ImDrawFlags.None, (selected ? 1.8f : 1.1f) * scale);
+        var label = SingleCategoryLabel(category);
+        var textSize = ImGui.CalcTextSize(label);
+        var textColor = selected ? Vector4.One : new Vector4(.78f, .72f, .63f, .82f);
+        drawList.AddText(position + (size - textSize) / 2, ImGui.ColorConvertFloat4ToU32(textColor), label);
     }
 
     private IFontHandle CreateCardFont(float size, bool bold, bool italic)
@@ -1467,30 +1664,41 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawFormattedCardText(string text, Vector2 cardSize, Vector4 color)
     {
-        var origin = ImGui.GetWindowPos() + new Vector2(cardSize.X * 0.095f, cardSize.Y * 0.455f);
-        var maxX = ImGui.GetWindowPos().X + cardSize.X * 0.905f;
+        var origin = ImGui.GetWindowPos() + new Vector2(cardSize.X * 0.075f, cardSize.Y * 0.56f);
+        var maxX = ImGui.GetWindowPos().X + cardSize.X * 0.925f;
         var contentWidth = maxX - origin.X;
-        var lineHeight = 24f * ImGuiHelpers.GlobalScale;
+        var baseLineHeight = 24f * ImGuiHelpers.GlobalScale;
+        var availableHeight = cardSize.Y * 0.16f;
+        var textScale = 1f;
         var lines = LayoutFormattedLines(text, contentWidth);
+        while (textScale > .76f && lines.Count > Math.Max(1, (int)MathF.Floor(availableHeight / (baseLineHeight * textScale))))
+        {
+            textScale = MathF.Max(.76f, textScale - .06f);
+            lines = LayoutFormattedLines(text, contentWidth / textScale);
+        }
         var y = origin.Y;
-        var maximumLines = Math.Max(1, (int)MathF.Floor(cardSize.Y * 0.255f / lineHeight));
+        var lineHeight = baseLineHeight * textScale;
+        var maximumLines = Math.Max(1, (int)MathF.Floor(availableHeight / lineHeight));
 
         foreach (var line in lines.Take(maximumLines))
         {
-            var x = line.Centered ? origin.X + MathF.Max(0, (contentWidth - line.Width) / 2f) : origin.X;
+            var renderedWidth = line.Width * textScale;
+            var x = line.Centered ? origin.X + MathF.Max(0, (contentWidth - renderedWidth) / 2f) : origin.X;
             foreach (var token in line.Tokens)
             {
                 using var pushedFont = FontFor(token.Bold, token.Italic).Push();
+                ImGui.SetWindowFontScale(textScale);
                 ImGui.SetCursorScreenPos(new Vector2(x, y));
                 ImGui.TextColored(color, token.Text);
                 if (token.Underline && token.Text.Trim().Length > 0)
                 {
-                    var underlineY = y + token.Size.Y + ImGuiHelpers.GlobalScale;
+                    var underlineY = y + token.Size.Y * textScale + ImGuiHelpers.GlobalScale;
                     ImGui.GetWindowDrawList().AddLine(new Vector2(x, underlineY),
-                        new Vector2(x + token.Size.X, underlineY), ImGui.ColorConvertFloat4ToU32(color),
+                        new Vector2(x + token.Size.X * textScale, underlineY), ImGui.ColorConvertFloat4ToU32(color),
                         ImGuiHelpers.GlobalScale);
                 }
-                x += token.Size.X;
+                x += token.Size.X * textScale;
+                ImGui.SetWindowFontScale(1f);
             }
             y += lineHeight;
         }
@@ -1498,22 +1706,32 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawFlavorText(string text, Vector2 cardSize, Vector4 color)
     {
-        var origin = ImGui.GetWindowPos() + new Vector2(cardSize.X * 0.115f, cardSize.Y * 0.77f);
-        var contentWidth = cardSize.X * 0.77f;
-        var lineHeight = 20f * ImGuiHelpers.GlobalScale;
+        var origin = ImGui.GetWindowPos() + new Vector2(cardSize.X * 0.075f, cardSize.Y * 0.77f);
+        var contentWidth = cardSize.X * 0.85f;
+        var baseLineHeight = 18f * ImGuiHelpers.GlobalScale;
+        var availableHeight = cardSize.Y * .057f;
+        var textScale = 1f;
         var lines = LayoutFlavorLines(text, contentWidth);
+        while (textScale > .86f && lines.Count > Math.Max(1, (int)MathF.Floor(availableHeight / (baseLineHeight * textScale))))
+        {
+            textScale = MathF.Max(.86f, textScale - .04f);
+            lines = LayoutFlavorLines(text, contentWidth / textScale);
+        }
         var y = origin.Y;
 
-        var maximumLines = Math.Max(1, (int)MathF.Floor(cardSize.Y * .09f / lineHeight));
+        var lineHeight = baseLineHeight * textScale;
+        var maximumLines = Math.Max(1, (int)MathF.Floor(availableHeight / lineHeight));
         foreach (var line in lines.Take(maximumLines))
         {
-            var x = origin.X + MathF.Max(0, (contentWidth - line.Width) / 2f);
+            var x = origin.X + MathF.Max(0, (contentWidth - line.Width * textScale) / 2f);
             foreach (var token in line.Tokens)
             {
                 using var pushedFont = flavorFont.Push();
+                ImGui.SetWindowFontScale(textScale);
                 ImGui.SetCursorScreenPos(new Vector2(x, y));
                 ImGui.TextColored(new Vector4(color.X, color.Y, color.Z, .82f), token.Text);
-                x += token.Size.X;
+                x += token.Size.X * textScale;
+                ImGui.SetWindowFontScale(1f);
             }
             y += lineHeight;
         }

@@ -28,8 +28,8 @@ public sealed class DeckStore
     private const long MaxBundleBytes = 100L * 1024 * 1024;
     private const int ArtworkWidth = 768;
     private const int ArtworkHeight = 512;
-    private const int CardBackWidth = 512;
-    private const int CardBackHeight = 768;
+    private const int CardBackWidth = 768;
+    private const int CardBackHeight = 998;
     private readonly string decksDirectory;
     private readonly string artworkRoot;
     private readonly Action<Exception, string, string>? logWarning;
@@ -54,7 +54,12 @@ public sealed class DeckStore
         var decks = new List<Deck>();
         foreach (var file in Directory.EnumerateFiles(decksDirectory, "*.json").Take(MaxDecks))
         {
-            try { decks.Add(ReadJson(File.ReadAllBytes(file), preserveId: true)); }
+            try
+            {
+                var deck = ReadJson(File.ReadAllBytes(file), preserveId: true);
+                if (MigrateCardBack(deck)) Save(deck, false);
+                decks.Add(deck);
+            }
             catch (Exception ex) { logWarning?.Invoke(ex, "Could not load deck {File}", file); }
         }
         if (decks.Count == 0)
@@ -66,8 +71,9 @@ public sealed class DeckStore
         return decks.OrderBy(deck => deck.Name, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
-    public void Save(Deck deck)
+    public void Save(Deck deck, bool markEdited = true)
     {
+        if (markEdited) deck.LastEditedAtUtc = DateTimeOffset.UtcNow;
         Validate(deck);
         Directory.CreateDirectory(decksDirectory);
         var destination = Path.Combine(decksDirectory, $"{deck.Id:N}.json");
@@ -205,8 +211,10 @@ public sealed class DeckStore
         var imported = ReadImport(path);
         var deck = imported.Deck;
         deck.Id = Guid.NewGuid();
+        deck.ImportedAtUtc = DateTimeOffset.UtcNow;
+        deck.LastEditedAtUtc = null;
         InstallArtwork(deck, imported.Images, imported.CardBack);
-        Save(deck);
+        Save(deck, false);
         return deck;
     }
 
@@ -276,8 +284,13 @@ public sealed class DeckStore
             using var memory = new MemoryStream();
             stream.CopyTo(memory);
             cardBack = memory.ToArray();
-            ValidateStoredImage(cardBack, CardBackWidth, CardBackHeight, "card back");
             if (!Hash(cardBack).Equals(deck.CustomCardBackSha256, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("The custom card back did not pass its integrity check.");
+            if (!HasImageDimensions(cardBack, CardBackWidth, CardBackHeight))
+            {
+                ValidateLegacyCardBack(cardBack);
+                cardBack = NormalizeImage(cardBack, CardBackWidth, CardBackHeight);
+                deck.CustomCardBackSha256 = Hash(cardBack);
+            }
         }
         return new ImportedDeck(deck, images, cardBack);
     }
@@ -435,6 +448,39 @@ public sealed class DeckStore
     }
 
     private static void ValidateStoredArtwork(byte[] source) => ValidateStoredImage(source, ArtworkWidth, ArtworkHeight, "custom artwork");
+
+    private bool MigrateCardBack(Deck deck)
+    {
+        var path = Path.Combine(DeckArtworkDirectory(deck.Id), "card-back.jpg");
+        if (string.IsNullOrWhiteSpace(deck.CustomCardBackSha256) || !File.Exists(path)) return false;
+        var bytes = File.ReadAllBytes(path);
+        if (HasImageDimensions(bytes, CardBackWidth, CardBackHeight)) return false;
+        ValidateLegacyCardBack(bytes);
+        var normalized = NormalizeImage(bytes, CardBackWidth, CardBackHeight);
+        File.WriteAllBytes(path, normalized);
+        deck.CustomCardBackSha256 = Hash(normalized);
+        return true;
+    }
+
+    private static bool HasImageDimensions(byte[] source, int width, int height)
+    {
+        try
+        {
+            using var input = new MemoryStream(source);
+            using var image = Image.FromStream(input, useEmbeddedColorManagement: true, validateImageData: true);
+            return image.Width == width && image.Height == height && image.RawFormat.Guid == ImageFormat.Jpeg.Guid;
+        }
+        catch (Exception ex) when (ex is ArgumentException or ExternalException or OutOfMemoryException)
+        {
+            return false;
+        }
+    }
+
+    private static void ValidateLegacyCardBack(byte[] source)
+    {
+        if (HasImageDimensions(source, 512, 768) || HasImageDimensions(source, 768, 881)) return;
+        throw new InvalidDataException("Bundled legacy card back must be a 512×768 or 768×881 JPEG image.");
+    }
 
     private static void ValidateStoredImage(byte[] source, int width, int height, string label)
     {
