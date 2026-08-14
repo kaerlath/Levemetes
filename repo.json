@@ -4,9 +4,9 @@
     "Name": "Levemetes",
     "InternalName": "Levemetes",
     "AssemblyVersion": "1.1.0.3",
-    "TestingAssemblyVersion": "1.2.0.10",
+    "TestingAssemblyVersion": "1.2.0.11",
     "TestingDalamudApiLevel": 15,
-    "TestingChangelog": "Beta 10 adds colored activity badges, a decorative title plaque, adaptive text sizing, and clearer visible-text guidance.",
+    "TestingChangelog": "Beta 11 adds an open-parchment title header, flourished activity text, and four permanently aligned intensity positions.",
     "Description": "Player-run levemetes card game for truth or dare shenanigans.  Categorized play with custom decks that can be created and shared between players!  Open with /levemetes",
     "ApplicableVersion": "any",
     "RepoUrl": "https://github.com/kaerlath/Levemetes",
@@ -17,7 +17,7 @@
     "IsTestingExclusive": false,
     "DownloadLinkInstall": "https://github.com/kaerlath/Levemetes/releases/download/1.1.1/Levemetes-1.1.1.zip",
     "DownloadLinkUpdate": "https://github.com/kaerlath/Levemetes/releases/download/1.1.1/Levemetes-1.1.1.zip",
-    "DownloadLinkTesting": "https://github.com/kaerlath/Levemetes/releases/download/1.2.0-beta.10/latest.zip",
-    "LastUpdate": "1786669135"
+    "DownloadLinkTesting": "https://github.com/kaerlath/Levemetes/releases/download/1.2.0-beta.11/latest.zip",
+    "LastUpdate": "1786671276"
   }
 ]
