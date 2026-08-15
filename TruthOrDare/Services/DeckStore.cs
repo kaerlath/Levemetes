@@ -239,6 +239,60 @@ public sealed class DeckStore
         return (additions.Count, skipped);
     }
 
+    public MergePreview PreviewMerge(string path, Deck destination)
+    {
+        var imported = ReadImport(path);
+        var existing = new HashSet<string>(destination.Cards.Select(card => CardFingerprint(card, destination)), StringComparer.Ordinal);
+        var cards = imported.Deck.Cards.Select((card, index) => new MergePreviewCard(
+            index,
+            card.Title,
+            StripFormatting(card.Text),
+            card.Activity,
+            card.Category,
+            card.CustomArtworkId is not null,
+            existing.Contains(CardFingerprint(card, imported.Deck)))).ToArray();
+        return new MergePreview(path, imported.Deck.Name, imported.Deck.Author, cards);
+    }
+
+    public (int Added, int Skipped) MergeSelected(MergePreview preview, Deck destination, IReadOnlyCollection<int> selectedIndices)
+    {
+        if (selectedIndices.Count == 0) return (0, 0);
+        var imported = ReadImport(preview.SourcePath);
+        var selected = new HashSet<int>(selectedIndices);
+        if (selected.Any(index => index < 0 || index >= imported.Deck.Cards.Count))
+            throw new InvalidDataException("The selected import list no longer matches this deck file.");
+
+        var existing = new HashSet<string>(destination.Cards.Select(card => CardFingerprint(card, destination)), StringComparer.Ordinal);
+        var additions = new List<Card>();
+        var skipped = 0;
+        foreach (var (card, index) in imported.Deck.Cards.Select((card, index) => (card, index)))
+        {
+            if (!selected.Contains(index)) continue;
+            if (!existing.Add(CardFingerprint(card, imported.Deck))) { skipped++; continue; }
+            additions.Add(card);
+        }
+        if (destination.Cards.Count + additions.Count > MaxCardsPerDeck)
+            throw new InvalidDataException($"A deck may contain at most {MaxCardsPerDeck} cards.");
+        if (additions.Count == 0) return (0, skipped);
+
+        var requiredArtwork = additions.Where(card => card.CustomArtworkId is not null)
+            .Select(card => card.CustomArtworkId!.Value).ToHashSet();
+        var existingArtworkHashes = destination.CustomArtwork.Select(asset => asset.Sha256).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var newArtworkCount = imported.Deck.CustomArtwork.Count(asset =>
+            requiredArtwork.Contains(asset.Id) && !existingArtworkHashes.Contains(asset.Sha256));
+        if (destination.CustomArtwork.Count + newArtworkCount > MaxCustomArtwork)
+            throw new InvalidDataException($"A deck may contain at most {MaxCustomArtwork} custom images.");
+        var artMap = MergeArtwork(imported, destination, requiredArtwork);
+        foreach (var card in additions)
+        {
+            if (card.CustomArtworkId is Guid sourceId) card.CustomArtworkId = artMap[sourceId];
+            card.Id = Guid.NewGuid();
+        }
+        destination.Cards.AddRange(additions);
+        Save(destination);
+        return (additions.Count, skipped);
+    }
+
     private ImportedDeck ReadImport(string path)
     {
         if (string.IsNullOrWhiteSpace(path)) throw new InvalidOperationException("Choose a Levemetes deck file.");
@@ -296,9 +350,12 @@ public sealed class DeckStore
     }
 
     private Dictionary<Guid, Guid> MergeArtwork(ImportedDeck imported, Deck destination)
+        => MergeArtwork(imported, destination, imported.Deck.CustomArtwork.Select(asset => asset.Id).ToHashSet());
+
+    private Dictionary<Guid, Guid> MergeArtwork(ImportedDeck imported, Deck destination, IReadOnlySet<Guid> requiredArtwork)
     {
         var map = new Dictionary<Guid, Guid>();
-        foreach (var source in imported.Deck.CustomArtwork)
+        foreach (var source in imported.Deck.CustomArtwork.Where(asset => requiredArtwork.Contains(asset.Id)))
         {
             var existing = destination.CustomArtwork.FirstOrDefault(asset => asset.Sha256.Equals(source.Sha256, StringComparison.OrdinalIgnoreCase));
             if (existing is not null) { map[source.Id] = existing.Id; continue; }
@@ -531,3 +588,7 @@ public sealed class DeckStore
     }
     private sealed record ImportedDeck(Deck Deck, Dictionary<Guid, byte[]> Images, byte[]? CardBack);
 }
+
+public sealed record MergePreview(string SourcePath, string DeckName, string Author, IReadOnlyList<MergePreviewCard> Cards);
+public sealed record MergePreviewCard(int SourceIndex, string Title, string Text, ActivityType Activity, CardCategory Category,
+    bool HasCustomArtwork, bool IsDuplicate);

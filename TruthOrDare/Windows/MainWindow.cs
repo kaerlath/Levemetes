@@ -84,6 +84,10 @@ public sealed class MainWindow : Window, IDisposable
     private bool directScoringEnabled;
     private IReadOnlyDictionary<string, int>? finalScores;
     private IReadOnlyList<string>? finalWinners;
+    private MergePreview? mergePreview;
+    private readonly HashSet<int> mergeSelectedCards = [];
+    private bool requestMergePreviewPopup;
+    private bool statusRenderedThisFrame;
 
     public MainWindow(Configuration configuration, DeckStore store, DirectGameService directGame, Action<Configuration> saveConfiguration,
         string cardBackPath, string templateDirectory, string artworkDirectory)
@@ -133,6 +137,7 @@ public sealed class MainWindow : Window, IDisposable
 
     public override void Draw()
     {
+        statusRenderedThisFrame = false;
         PushLevemetesTheme();
         DrawWindowTitle();
         ProcessDirectGameEvents();
@@ -151,9 +156,10 @@ public sealed class MainWindow : Window, IDisposable
             { DrawActiveTabAccent(); DrawDirectGameTab(); ImGui.EndTabItem(); }
             ImGui.EndTabBar();
         }
-        DrawStatus();
+        if (!statusRenderedThisFrame) DrawStatus();
         DrawVolunteerPrompt();
         DrawGameResultsPopup();
+        DrawMergePreviewPopup();
         DrawGameInstructionsButton();
         DrawConfirmations();
         fileDialogManager.Draw();
@@ -219,12 +225,24 @@ public sealed class MainWindow : Window, IDisposable
     private static void DrawWindowTitle()
     {
         var text = "L E V E M E T E S";
-        var original = ImGui.GetFontSize();
+        var version = typeof(Plugin).Assembly.GetName().Version;
+        var versionText = version is null ? string.Empty : $"v{version.Major}.{version.Minor}.{version.Build}.{version.Revision}";
+        var titleY = ImGui.GetCursorPosY();
         ImGui.SetWindowFontScale(1.35f);
         var width = ImGui.CalcTextSize(text).X;
         ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(), (ImGui.GetWindowWidth() - width) / 2));
         ImGui.TextColored(ThemeGoldBright, text);
         ImGui.SetWindowFontScale(1f);
+        var nextLineY = ImGui.GetCursorPosY();
+        if (versionText.Length > 0)
+        {
+            var versionWidth = ImGui.CalcTextSize(versionText).X;
+            ImGui.SetCursorPos(new Vector2(
+                MathF.Max(ImGui.GetCursorPosX(), ImGui.GetWindowWidth() - versionWidth - 18 * ImGuiHelpers.GlobalScale),
+                titleY + 4 * ImGuiHelpers.GlobalScale));
+            ImGui.TextDisabled(versionText);
+            ImGui.SetCursorPosY(nextLineY);
+        }
         GoldSeparator();
     }
 
@@ -373,9 +391,15 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.SetWindowFontScale(1f);
             ImGui.Spacing();
         }
-        var width = MathF.Min(ImGui.GetContentRegionAvail().X, 500 * ImGuiHelpers.GlobalScale);
+        var availablePlayWidth = ImGui.GetContentRegionAvail().X;
+        var actionRailWidth = MathF.Min(190 * ImGuiHelpers.GlobalScale, MathF.Max(150 * ImGuiHelpers.GlobalScale, availablePlayWidth * .27f));
+        var actionRailGap = 16 * ImGuiHelpers.GlobalScale;
+        var width = MathF.Min(500 * ImGuiHelpers.GlobalScale,
+            MathF.Max(250 * ImGuiHelpers.GlobalScale, availablePlayWidth - actionRailWidth - actionRailGap));
         var cardSize = new Vector2(width, width * 1.30f);
-        ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(), (ImGui.GetContentRegionMax().X - width) / 2));
+        var playGroupWidth = width + actionRailGap + actionRailWidth;
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + MathF.Max(0, (availablePlayWidth - playGroupWidth) / 2));
+        ImGui.BeginGroup();
         ImGui.PushStyleVar(ImGuiStyleVar.ChildBorderSize, 0);
         ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 12 * ImGuiHelpers.GlobalScale);
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, Vector2.Zero);
@@ -408,6 +432,11 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.PopStyleColor(2);
         ImGui.PopStyleVar(3);
 
+        DrawPlayStatus();
+        ImGui.EndGroup();
+        ImGui.SameLine(0, actionRailGap);
+        ImGui.BeginChild("##PlayActionRail", new Vector2(actionRailWidth, cardSize.Y), false);
+
         if (directGame.IsConnected && directGame.ScoringEnabled)
         {
             ImGui.Spacing();
@@ -421,7 +450,7 @@ public sealed class MainWindow : Window, IDisposable
                 if (!mayVote) ImGui.BeginDisabled();
                 for (var score = 0; score <= 5; score++)
                 {
-                    if (score > 0) ImGui.SameLine();
+                    if (score > 0 && score % 3 != 0) ImGui.SameLine();
                     if (ImGui.Button(score.ToString(), new Vector2(38, 32) * ImGuiHelpers.GlobalScale)) directGame.SubmitScore(score);
                 }
                 if (!mayVote) ImGui.EndDisabled();
@@ -441,47 +470,37 @@ public sealed class MainWindow : Window, IDisposable
             if (!mayVote) ImGui.BeginDisabled();
             foreach (var candidate in directGame.TieBreakCandidates)
             {
-                if (ImGui.Button($"Vote for {candidate}")) directGame.SubmitTieBreakVote(candidate);
-                ImGui.SameLine();
+                if (ImGui.Button($"Vote for {candidate}", new Vector2(-1, 0))) directGame.SubmitTieBreakVote(candidate);
             }
-            ImGui.NewLine();
             if (!mayVote) ImGui.EndDisabled();
         }
 
-        ImGui.Dummy(new Vector2(0, ImGui.GetTextLineHeightWithSpacing()));
-        var copyButtonSize = new Vector2(190, 34) * ImGuiHelpers.GlobalScale;
-        ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(),
-            ImGui.GetCursorPosX() + (ImGui.GetContentRegionAvail().X - copyButtonSize.X) / 2));
+        ImGui.Spacing();
+        FormSectionHeading("CARD ACTIONS");
+        var railButtonSize = new Vector2(-1, 34 * ImGuiHelpers.GlobalScale);
         if (displayedCard is null) ImGui.BeginDisabled();
-        if (ImGui.Button("Copy Text of Card", copyButtonSize) && displayedCard is Card cardToCopy)
+        if (ImGui.Button("Copy Card Text", railButtonSize) && displayedCard is Card cardToCopy)
         {
             ImGui.SetClipboardText(StripFormatting(cardToCopy.Text));
             SetStatus("Card text copied to the clipboard.");
         }
         if (displayedCard is null) ImGui.EndDisabled();
 
-        ImGui.Dummy(new Vector2(0, ImGui.GetTextLineHeightWithSpacing()));
+        ImGui.Spacing();
         var localPlayer = GetLocalCharacterLabel();
         var directTurnReady = !directGame.IsConnected ||
             (directGame.GameStarted && string.Equals(directGame.CurrentPlayer, localPlayer, StringComparison.OrdinalIgnoreCase));
         var canDraw = categoryCount > 0 && (directGame.IsConnected ? directGame.Remaining : session.Remaining) > 0 && directTurnReady && !directGame.AwaitingScores;
-        var buttonGap = 12 * ImGuiHelpers.GlobalScale;
-        var availableWidth = ImGui.GetContentRegionAvail().X;
-        var actionButtonWidth = MathF.Min(210 * ImGuiHelpers.GlobalScale, (availableWidth - buttonGap) / 2);
-        var actionButtonSize = new Vector2(actionButtonWidth, 44 * ImGuiHelpers.GlobalScale);
-        var actionGroupWidth = actionButtonSize.X * 2 + buttonGap;
-        ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(),
-            ImGui.GetCursorPosX() + (availableWidth - actionGroupWidth) / 2));
         if (!canDraw) ImGui.BeginDisabled();
-        if (ImGui.Button("Draw", actionButtonSize))
+        if (ImGui.Button("Draw", railButtonSize))
         {
             if (directGame.IsConnected) directGame.RequestDraw();
             else session.Draw(selectedDeck, playCategory);
         }
         if (!canDraw) ImGui.EndDisabled();
-        ImGui.SameLine(0, buttonGap);
+        ImGui.Spacing();
         if (directGame.IsConnected && !directGame.IsHost) ImGui.BeginDisabled();
-        if (ImGui.Button("Shuffle / Reset", actionButtonSize))
+        if (ImGui.Button("Shuffle / Reset", railButtonSize))
         {
             if (directGame.IsConnected) directGame.ResetSharedPile(selectedDeck);
             else { session.Reset(selectedDeck, playCategory); SetStatus("Draw pile shuffled."); }
@@ -493,7 +512,7 @@ public sealed class MainWindow : Window, IDisposable
         {
             ImGui.Spacing();
             if (!directGame.IsHost) ImGui.BeginDisabled();
-            if (ImGui.Button("End Game", new Vector2(150, 36) * ImGuiHelpers.GlobalScale)) directGame.EndGame();
+            if (ImGui.Button("End Game", railButtonSize)) directGame.EndGame();
             if (!directGame.IsHost) ImGui.EndDisabled();
         }
         if (categoryCount > 0 && (directGame.IsConnected ? directGame.Remaining : session.Remaining) == 0)
@@ -502,6 +521,7 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TextDisabled("Waiting for the host to start the game.");
         else if (directGame.IsConnected && !directTurnReady)
             ImGui.TextDisabled($"Waiting for {directGame.CurrentPlayer} to draw.");
+        ImGui.EndChild();
     }
 
     private void DrawCardsTab()
@@ -809,7 +829,7 @@ public sealed class MainWindow : Window, IDisposable
         if (ImGui.Button("Delete Deck")) requestDeleteDeck = true;
         if (decks.Count <= 1) ImGui.EndDisabled();
         FormSectionHeading("IMPORT & MERGE");
-        ImGui.TextWrapped("Import a portable .levemetesdeck bundle (including custom artwork) or a legacy JSON deck. Import it separately or merge only its new cards and images into this deck.");
+        ImGui.TextWrapped("Import a portable .levemetesdeck bundle (including custom artwork) or a legacy JSON deck. When merging, review its cards and choose exactly which ones to add.");
         if (ImGui.Button("Import as New Deck...")) OpenImportDialog(merge: false);
         ImGui.SameLine();
         if (ImGui.Button("Merge into Selected...")) OpenImportDialog(merge: true);
@@ -1146,6 +1166,16 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.TextColored(statusIsError ? new Vector4(1f, .35f, .35f, 1f) : new Vector4(.45f, .9f, .55f, 1f), status);
     }
 
+    private void DrawPlayStatus()
+    {
+        statusRenderedThisFrame = true;
+        if (string.IsNullOrWhiteSpace(status)) return;
+        ImGui.Spacing();
+        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X);
+        ImGui.TextColored(statusIsError ? new Vector4(1f, .35f, .35f, 1f) : new Vector4(.45f, .9f, .55f, 1f), status);
+        ImGui.PopTextWrapPos();
+    }
+
     private void DrawVolunteerPrompt()
     {
         if (volunteerResolutionId is not null) ImGui.OpenPopup("Blind Volunteer Needed");
@@ -1441,9 +1471,11 @@ public sealed class MainWindow : Window, IDisposable
     {
         if (merge)
         {
-            var result = store.Merge(path, selectedDeck);
-            session.Reset(selectedDeck, playCategory);
-            SetStatus($"Merged {result.Added} new card{(result.Added == 1 ? string.Empty : "s")} into selected deck; skipped {result.Skipped} duplicate{(result.Skipped == 1 ? string.Empty : "s")}.");
+            mergePreview = store.PreviewMerge(path, selectedDeck);
+            mergeSelectedCards.Clear();
+            foreach (var card in mergePreview.Cards.Where(card => !card.IsDuplicate)) mergeSelectedCards.Add(card.SourceIndex);
+            requestMergePreviewPopup = true;
+            SetStatus($"Reviewing {mergePreview.Cards.Count} cards from {mergePreview.DeckName}.");
             return;
         }
 
@@ -1451,6 +1483,100 @@ public sealed class MainWindow : Window, IDisposable
         decks.Add(deck);
         SelectDeck(deck);
         SetStatus($"Imported {deck.Name} as a new deck.");
+    }
+
+    private void DrawMergePreviewPopup()
+    {
+        if (requestMergePreviewPopup)
+        {
+            ImGui.OpenPopup("Choose Cards to Merge");
+            requestMergePreviewPopup = false;
+        }
+        ImGui.SetNextWindowSize(new Vector2(760, 620) * ImGuiHelpers.GlobalScale, ImGuiCond.Appearing);
+        if (!ImGui.BeginPopupModal("Choose Cards to Merge", ImGuiWindowFlags.NoSavedSettings)) return;
+        if (mergePreview is null) { ImGui.CloseCurrentPopup(); ImGui.EndPopup(); return; }
+
+        SectionHeading($"Merge from {mergePreview.DeckName}");
+        if (!string.IsNullOrWhiteSpace(mergePreview.Author)) ImGui.TextDisabled($"by {mergePreview.Author}");
+        var available = mergePreview.Cards.Count(card => !card.IsDuplicate);
+        var duplicateCount = mergePreview.Cards.Count - available;
+        ImGui.TextWrapped($"Choose cards to add to {selectedDeck.Name}. Duplicate cards cannot be selected. " +
+            $"{available} available; {duplicateCount} duplicate{(duplicateCount == 1 ? string.Empty : "s")} already present.");
+
+        if (ImGui.Button("Select All"))
+        {
+            mergeSelectedCards.Clear();
+            foreach (var card in mergePreview.Cards.Where(card => !card.IsDuplicate)) mergeSelectedCards.Add(card.SourceIndex);
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Clear All")) mergeSelectedCards.Clear();
+        ImGui.SameLine();
+        ImGui.TextDisabled($"{mergeSelectedCards.Count} selected");
+        GoldSeparator();
+
+        if (ImGui.BeginChild("##MergeCardList", new Vector2(0, -58 * ImGuiHelpers.GlobalScale), true))
+        {
+            foreach (var card in mergePreview.Cards)
+            {
+                ImGui.PushID(card.SourceIndex);
+                var selected = mergeSelectedCards.Contains(card.SourceIndex);
+                if (card.IsDuplicate) ImGui.BeginDisabled();
+                if (ImGui.Checkbox("##SelectMergeCard", ref selected))
+                {
+                    if (selected) mergeSelectedCards.Add(card.SourceIndex);
+                    else mergeSelectedCards.Remove(card.SourceIndex);
+                }
+                if (card.IsDuplicate) ImGui.EndDisabled();
+                ImGui.SameLine();
+                ImGui.TextUnformatted(string.IsNullOrWhiteSpace(card.Title) ? "Untitled Levemete" : card.Title);
+                ImGui.SameLine();
+                ImGui.TextDisabled($"• {ActivityLabel(card.Activity)} • {CategoryLabel(card.Category)}");
+                if (card.HasCustomArtwork)
+                {
+                    ImGui.SameLine();
+                    ImGui.TextColored(ThemeGoldBright, $"{FontAwesomeIcon.Image.ToIconString()} Custom image");
+                }
+                if (card.IsDuplicate)
+                {
+                    ImGui.SameLine();
+                    ImGui.TextDisabled("Already in selected deck");
+                }
+                var previewText = card.Text.Replace('\r', ' ').Replace('\n', ' ').Trim();
+                if (previewText.Length > 180) previewText = previewText[..177] + "...";
+                if (!string.IsNullOrWhiteSpace(previewText))
+                {
+                    ImGui.Indent(30 * ImGuiHelpers.GlobalScale);
+                    ImGui.TextWrapped(previewText);
+                    ImGui.Unindent(30 * ImGuiHelpers.GlobalScale);
+                }
+                ImGui.Separator();
+                ImGui.PopID();
+            }
+        }
+        ImGui.EndChild();
+
+        if (mergeSelectedCards.Count == 0) ImGui.BeginDisabled();
+        if (ImGui.Button("Import Selected", new Vector2(170, 38) * ImGuiHelpers.GlobalScale))
+        {
+            TryAction(() =>
+            {
+                var result = store.MergeSelected(mergePreview, selectedDeck, mergeSelectedCards);
+                session.Reset(selectedDeck, playCategory);
+                SetStatus($"Imported {result.Added} selected card{(result.Added == 1 ? string.Empty : "s")}; skipped {result.Skipped} duplicate{(result.Skipped == 1 ? string.Empty : "s")}.");
+                mergePreview = null;
+                mergeSelectedCards.Clear();
+                ImGui.CloseCurrentPopup();
+            });
+        }
+        if (mergeSelectedCards.Count == 0) ImGui.EndDisabled();
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel", new Vector2(110, 38) * ImGuiHelpers.GlobalScale))
+        {
+            mergePreview = null;
+            mergeSelectedCards.Clear();
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.EndPopup();
     }
 
     private void SelectDeck(Deck deck)
@@ -1597,8 +1723,8 @@ public sealed class MainWindow : Window, IDisposable
     {
         var scale = ImGuiHelpers.GlobalScale;
         var windowPosition = ImGui.GetWindowPos();
-        var plaqueTop = windowPosition + new Vector2(cardSize.X * .27f, cardSize.Y * .845f);
-        var plaqueSize = new Vector2(cardSize.X * .46f, cardSize.Y * .028f);
+        var plaqueTop = windowPosition + new Vector2(cardSize.X * .275f, cardSize.Y * .839f);
+        var plaqueSize = new Vector2(cardSize.X * .45f, cardSize.Y * .026f);
         var drawList = ImGui.GetWindowDrawList();
         drawList.AddRectFilled(plaqueTop, plaqueTop + plaqueSize,
             ImGui.ColorConvertFloat4ToU32(new Vector4(.34f, .09f, .12f, .96f)), 3 * scale);
