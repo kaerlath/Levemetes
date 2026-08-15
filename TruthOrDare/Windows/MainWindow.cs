@@ -162,8 +162,10 @@ public sealed class MainWindow : Window, IDisposable
         DrawMergePreviewPopup();
         DrawGameInstructionsButton();
         DrawConfirmations();
-        fileDialogManager.Draw();
         PopLevemetesTheme();
+        ImGui.SetNextWindowSizeConstraints(new Vector2(760, 520) * ImGuiHelpers.GlobalScale,
+            new Vector2(float.MaxValue, float.MaxValue));
+        fileDialogManager.Draw();
     }
 
     private static void PushLevemetesTheme()
