@@ -1725,8 +1725,8 @@ public sealed class MainWindow : Window, IDisposable
     {
         var scale = ImGuiHelpers.GlobalScale;
         var windowPosition = ImGui.GetWindowPos();
-        var plaqueTop = windowPosition + new Vector2(cardSize.X * .275f, cardSize.Y * .839f);
-        var plaqueSize = new Vector2(cardSize.X * .45f, cardSize.Y * .026f);
+        var plaqueTop = windowPosition + new Vector2(cardSize.X * .29f, cardSize.Y * .8375f);
+        var plaqueSize = new Vector2(cardSize.X * .42f, cardSize.Y * .024f);
         var drawList = ImGui.GetWindowDrawList();
         drawList.AddRectFilled(plaqueTop, plaqueTop + plaqueSize,
             ImGui.ColorConvertFloat4ToU32(new Vector4(.34f, .09f, .12f, .96f)), 3 * scale);
