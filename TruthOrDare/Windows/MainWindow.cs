@@ -377,10 +377,18 @@ public sealed class MainWindow : Window, IDisposable
             {
                 var displayName = RemoveHostSuffix(player);
                 var isCurrent = directGame.GameStarted && displayName.Equals(directGame.CurrentPlayer, StringComparison.OrdinalIgnoreCase);
+                var isAwaitingScore = directGame.AwaitingScores &&
+                    directGame.EligibleScoreVoters.Contains(displayName, StringComparer.OrdinalIgnoreCase) &&
+                    !directGame.SubmittedVoters.Contains(displayName, StringComparer.OrdinalIgnoreCase);
+                var status = isCurrent
+                    ? " - current turn"
+                    : isAwaitingScore ? " - awaiting score" : string.Empty;
+                var playerColor = isCurrent
+                    ? new Vector4(.95f, .78f, .30f, 1f)
+                    : isAwaitingScore ? new Vector4(1f, .60f, .25f, 1f) : Vector4.One;
                 ImGui.Bullet();
                 ImGui.SameLine();
-                ImGui.TextColored(isCurrent ? new Vector4(.95f, .78f, .30f, 1f) : Vector4.One,
-                    player + (isCurrent ? " — current turn" : string.Empty));
+                ImGui.TextColored(playerColor, player + status);
             }
             if (!directGame.IsHost) ImGui.TextDisabled("Only the host can Shuffle / Reset the shared deck.");
         }
@@ -394,7 +402,7 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.Spacing();
         }
         var availablePlayWidth = ImGui.GetContentRegionAvail().X;
-        var actionRailWidth = MathF.Min(190 * ImGuiHelpers.GlobalScale, MathF.Max(150 * ImGuiHelpers.GlobalScale, availablePlayWidth * .27f));
+        var actionRailWidth = MathF.Min(300 * ImGuiHelpers.GlobalScale, MathF.Max(245 * ImGuiHelpers.GlobalScale, availablePlayWidth * .34f));
         var actionRailGap = 16 * ImGuiHelpers.GlobalScale;
         var width = MathF.Min(500 * ImGuiHelpers.GlobalScale,
             MathF.Max(250 * ImGuiHelpers.GlobalScale, availablePlayWidth - actionRailWidth - actionRailGap));
@@ -523,6 +531,17 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TextDisabled("Waiting for the host to start the game.");
         else if (directGame.IsConnected && !directTurnReady)
             ImGui.TextDisabled($"Waiting for {directGame.CurrentPlayer} to draw.");
+        if (directGame.IsConnected && directGame.IsHost)
+        {
+            ImGui.Spacing();
+            var canForcePass = directGame.AwaitingScores &&
+                directGame.SubmittedVoters.Count < directGame.EligibleScoreVoterCount;
+            if (!canForcePass) ImGui.BeginDisabled();
+            if (ImGui.Button("Force Pass", railButtonSize)) directGame.ForcePassScores();
+            if (!canForcePass) ImGui.EndDisabled();
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip("Assign 3 points for each eligible player who has not scored this turn.");
+        }
         ImGui.EndChild();
     }
 

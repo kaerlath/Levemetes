@@ -30,7 +30,7 @@ public sealed class Plugin : IDalamudPlugin
         var store = new DeckStore(PluginInterface.GetPluginConfigDirectory(),
             (exception, message, file) => Log.Warning(exception, message, file));
         directGame = new DirectGameService((exception, message) => Log.Warning(exception, message));
-        var cardBackPath = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "card-back.jpg");
+        var cardBackPath = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "card-back.png");
         var templateDirectory = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "Assets", "Templates");
         var artworkDirectory = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "Assets", "Artwork");
         mainWindow = new MainWindow(configuration, store, directGame, SaveConfiguration, cardBackPath, templateDirectory, artworkDirectory);

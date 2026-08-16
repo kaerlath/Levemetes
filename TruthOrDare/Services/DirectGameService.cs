@@ -73,6 +73,7 @@ public sealed class DirectGameService : IDisposable
     public string ScoringDrawer { get { lock (stateLock) return scoringDrawer; } }
     public IReadOnlyDictionary<string, int> Scores { get { lock (stateLock) return new Dictionary<string, int>(scores); } }
     public IReadOnlyCollection<string> SubmittedVoters { get { lock (stateLock) return roundVotes.Keys.ToArray(); } }
+    public IReadOnlyCollection<string> EligibleScoreVoters { get { lock (stateLock) return eligibleScoreVoters.ToArray(); } }
     public int EligibleScoreVoterCount { get { lock (stateLock) return eligibleScoreVoterCount; } }
     public IReadOnlyList<string> TieBreakCandidates { get { lock (stateLock) return tieBreakCandidates.ToArray(); } }
     public IReadOnlyCollection<string> SubmittedTieBreakVoters { get { lock (stateLock) return tieBreakVotes.Keys.ToArray(); } }
@@ -149,6 +150,40 @@ public sealed class DirectGameService : IDisposable
         if (IsHost) HostScore(playerName, value);
         else if (Mode == DirectGameMode.Joined && hostPeer is not null)
             _ = hostPeer.SendJsonAsync(PacketType.ScoreRequest, new ScoreRequest(value), cancellation?.Token ?? CancellationToken.None);
+    }
+
+    public void ForcePassScores()
+    {
+        if (!IsHost) throw new InvalidOperationException("Only the host can force-pass scoring.");
+
+        ScoreStateNotice notice;
+        var forcedCount = 0;
+        lock (stateLock)
+        {
+            if (!scoringEnabled || scoringDrawer.Length == 0) return;
+
+            foreach (var voter in eligibleScoreVoters.Where(voter => !roundVotes.ContainsKey(voter)))
+            {
+                roundVotes[voter] = 3;
+                forcedCount++;
+            }
+
+            if (forcedCount == 0) return;
+
+            scores.TryAdd(scoringDrawer, 0);
+            scores[scoringDrawer] += roundVotes.Values.Sum();
+            scoringDrawer = string.Empty;
+            roundVotes.Clear();
+            eligibleScoreVoters.Clear();
+            eligibleScoreVoterCount = 0;
+            AdvanceTurnLocked();
+            notice = MakeScoreStateLocked();
+        }
+
+        BroadcastJson(PacketType.ScoreState, notice);
+        events.Enqueue(new DirectGameEvent(DirectGameEventType.ScoreStateChanged,
+            $"The host force-passed {forcedCount} missing vote{(forcedCount == 1 ? string.Empty : "s")} at 3 points."));
+        BroadcastGameState();
     }
 
     public void SubmitTieBreakVote(string candidate)
@@ -693,11 +728,11 @@ public sealed class DirectGameService : IDisposable
         BroadcastGameState();
     }
 
-    private ScoreStateNotice MakeScoreStateLocked() => new(scoringEnabled, scoringDrawer, new Dictionary<string, int>(scores), roundVotes.Keys.ToArray(), eligibleScoreVoterCount);
+    private ScoreStateNotice MakeScoreStateLocked() => new(scoringEnabled, scoringDrawer, new Dictionary<string, int>(scores), roundVotes.Keys.ToArray(), eligibleScoreVoters.ToArray());
     private void BroadcastScoreState() => BroadcastJson(PacketType.ScoreState, MakeScoreStateLocked());
     private void ApplyScoreState(ScoreStateNotice state)
     {
-        lock (stateLock) { scoringEnabled = state.Enabled; scoringDrawer = state.Drawer; scores.Clear(); foreach (var pair in state.Scores) scores[pair.Key] = pair.Value; roundVotes.Clear(); foreach (var name in state.Submitted) roundVotes[name] = 0; eligibleScoreVoters.Clear(); eligibleScoreVoterCount = state.EligibleCount; }
+        lock (stateLock) { scoringEnabled = state.Enabled; scoringDrawer = state.Drawer; scores.Clear(); foreach (var pair in state.Scores) scores[pair.Key] = pair.Value; roundVotes.Clear(); foreach (var name in state.Submitted) roundVotes[name] = 0; eligibleScoreVoters.Clear(); foreach (var name in state.Eligible) eligibleScoreVoters.Add(name); eligibleScoreVoterCount = eligibleScoreVoters.Count; }
         events.Enqueue(new DirectGameEvent(DirectGameEventType.ScoreStateChanged, scoringDrawer.Length == 0 ? "Scoring complete." : "Waiting for scores."));
     }
 
@@ -930,7 +965,7 @@ public sealed class DirectGameService : IDisposable
     private sealed record VolunteerResolved(Guid ResolutionId, Guid CardId, string Drawer, int Remaining, string SelectedPlayer, bool WasAutomatic);
     private sealed record RandomTargetNotice(string Drawer, string SelectedPlayer);
     private sealed record ScoreRequest(int Value);
-    private sealed record ScoreStateNotice(bool Enabled, string Drawer, IReadOnlyDictionary<string, int> Scores, IReadOnlyList<string> Submitted, int EligibleCount);
+    private sealed record ScoreStateNotice(bool Enabled, string Drawer, IReadOnlyDictionary<string, int> Scores, IReadOnlyList<string> Submitted, IReadOnlyList<string> Eligible);
     private sealed record TieBreakVoteRequest(string Candidate);
     private sealed record TieBreakStateNotice(IReadOnlyList<string> Candidates, IReadOnlyList<string> Submitted, int EligibleCount);
     private sealed record GameResultsNotice(IReadOnlyDictionary<string, int> Scores, IReadOnlyList<string> Winners);
