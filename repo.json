@@ -4,9 +4,9 @@
     "Name": "Levemetes",
     "InternalName": "Levemetes",
     "AssemblyVersion": "1.3.4.0",
-    "TestingAssemblyVersion": "1.3.4.0",
+    "TestingAssemblyVersion": "1.4.0.0",
     "TestingDalamudApiLevel": 15,
-    "TestingChangelog": "Levemetes 1.3.4 multiplayer voting changes/fixes.",
+    "TestingChangelog": "Levemetes 1.4.0 Beta 1 adds Cloudflare Relay Multiplayer rooms for up to 16 players.",
     "Description": "Player-run levemetes card game for truth or dare shenanigans.  Categorized play with custom decks that can be created and shared between players!  Open with /levemetes",
     "ApplicableVersion": "any",
     "RepoUrl": "https://github.com/kaerlath/Levemetes",
@@ -17,7 +17,7 @@
     "IsTestingExclusive": false,
     "DownloadLinkInstall": "https://github.com/kaerlath/Levemetes/releases/download/1.3.4/latest.zip",
     "DownloadLinkUpdate": "https://github.com/kaerlath/Levemetes/releases/download/1.3.4/latest.zip",
-    "DownloadLinkTesting": "https://github.com/kaerlath/Levemetes/releases/download/1.3.4/latest.zip",
-    "LastUpdate": "1786862652"
+    "DownloadLinkTesting": "https://github.com/kaerlath/Levemetes/releases/download/1.4.0-beta.1/latest.zip",
+    "LastUpdate": "1786983077"
   }
 ]
