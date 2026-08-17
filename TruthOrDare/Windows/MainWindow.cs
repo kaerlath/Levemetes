@@ -77,6 +77,8 @@ public sealed class MainWindow : Window, IDisposable
     private string directInvitation = string.Empty;
     private Card? directCurrentCard;
     private string directDrawer = string.Empty;
+    private bool networkDrawRequested;
+    private bool networkVolunteerPending;
     private bool requestPlayTab;
     private bool publicAddressDiscoveryAttempted;
     private Task<string>? publicAddressDiscoveryTask;
@@ -577,12 +579,15 @@ public sealed class MainWindow : Window, IDisposable
                 : relayState?.Started == true && string.Equals(relayState.CurrentPlayer, localPlayer, StringComparison.OrdinalIgnoreCase));
         var remainingCards = directGame.IsConnected ? directGame.Remaining : relayGame.IsConnected ? relayState?.Remaining ?? 0 : session.Remaining;
         var awaitingScores = directGame.IsConnected ? directGame.AwaitingScores : relayGame.IsConnected && !string.IsNullOrWhiteSpace(relayState?.ScoringDrawer);
-        var canDraw = categoryCount > 0 && remainingCards > 0 && turnReady && !awaitingScores;
+        var awaitingVolunteer = directGame.IsConnected
+            ? networkVolunteerPending || directGame.AwaitingVolunteer
+            : relayGame.IsConnected && relayState?.PendingVolunteer is not null;
+        var canDraw = categoryCount > 0 && remainingCards > 0 && turnReady && !awaitingScores && !awaitingVolunteer && !networkDrawRequested;
         if (!canDraw) ImGui.BeginDisabled();
         if (ImGui.Button("Draw", railButtonSize))
         {
-            if (directGame.IsConnected) directGame.RequestDraw();
-            else if (relayGame.IsConnected) relayTask = relayGame.RequestDrawAsync();
+            if (directGame.IsConnected) { networkDrawRequested = true; directGame.RequestDraw(); }
+            else if (relayGame.IsConnected) { networkDrawRequested = true; relayTask = relayGame.RequestDrawAsync(); }
             else session.Draw(selectedDeck, playCategory);
         }
         if (!canDraw) ImGui.EndDisabled();
@@ -602,11 +607,24 @@ public sealed class MainWindow : Window, IDisposable
         {
             ImGui.Spacing();
             if (!networkHost) ImGui.BeginDisabled();
+            if (ImGui.Button("Start New Game", railButtonSize))
+            {
+                directCurrentCard = null;
+                directDrawer = string.Empty;
+                networkDrawRequested = false;
+                networkVolunteerPending = false;
+                if (directGame.IsConnected) TryAction(() => directGame.StartNewGame(selectedDeck));
+                else relayTask = relayGame.StartNewGameAsync();
+            }
+            if (!networkHost) ImGui.EndDisabled();
+            ImGui.Spacing();
+            var gameActive = directGame.IsConnected ? directGame.GameStarted : relayState?.Started == true;
+            if (!networkHost || !gameActive) ImGui.BeginDisabled();
             if (ImGui.Button("End Game", railButtonSize))
             {
                 if (directGame.IsConnected) directGame.EndGame(); else relayTask = relayGame.EndGameAsync();
             }
-            if (!networkHost) ImGui.EndDisabled();
+            if (!networkHost || !gameActive) ImGui.EndDisabled();
         }
         if (categoryCount > 0 && remainingCards == 0)
             ImGui.TextDisabled(networkConnected && !networkHost ? "No shared cards remain. The host must shuffle and reset." : "No cards remain in this category. Shuffle / Reset to play again.");
@@ -672,7 +690,7 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawCardEditorDeckHeader()
     {
-        var height = 66 * ImGuiHelpers.GlobalScale;
+        var height = 76 * ImGuiHelpers.GlobalScale;
         ImGui.BeginChild("CardEditorDeckHeader", new Vector2(0, height), true, ImGuiWindowFlags.NoScrollbar);
         var texture = Plugin.TextureProvider.GetFromFile(CurrentCardBackPath()).GetWrapOrDefault();
         var thumbnail = new Vector2(42, 48) * ImGuiHelpers.GlobalScale;
@@ -686,16 +704,28 @@ public sealed class MainWindow : Window, IDisposable
             : $"by {selectedDeck.Author}  •  {selectedDeck.Cards.Count} cards");
         ImGui.EndGroup();
         ImGui.SameLine();
-        if (ImGui.Button("Change Card Back…")) OpenCardBackDialog();
-        if (store.GetCustomCardBackPath(selectedDeck) is not null)
+        var backs = store.GetCardBackChoices();
+        var selectedBack = backs.FirstOrDefault(choice =>
+            choice.Sha256.Equals(selectedDeck.CustomCardBackSha256, StringComparison.OrdinalIgnoreCase));
+        ImGui.SetNextItemWidth(210 * ImGuiHelpers.GlobalScale);
+        if (ImGui.BeginCombo("##CardBackChoice", selectedBack?.Name ?? "Default Card Back"))
         {
-            ImGui.SameLine();
-            if (ImGui.Button("Use Default Back")) TryAction(() =>
+            if (ImGui.Selectable("Default Card Back", string.IsNullOrWhiteSpace(selectedDeck.CustomCardBackSha256)))
             {
                 store.RemoveCustomCardBack(selectedDeck);
                 SetStatus("Restored the default card back for this deck.");
-            });
+            }
+            if (backs.Count > 0) ImGui.Separator();
+            foreach (var choice in backs)
+                if (ImGui.Selectable(choice.Name, selectedBack?.Sha256 == choice.Sha256)) TryAction(() =>
+                {
+                    store.SelectCustomCardBack(selectedDeck, choice.Sha256);
+                    SetStatus($"Selected card back: {choice.Name}.");
+                });
+            ImGui.EndCombo();
         }
+        ImGui.SameLine();
+        if (ImGui.Button("Change Card Back…")) OpenCardBackDialog();
         ImGui.EndChild();
         ImGui.Spacing();
     }
@@ -1124,14 +1154,21 @@ public sealed class MainWindow : Window, IDisposable
                         directCurrentCard = selectedDeck.Cards.FirstOrDefault(card => card.Id == gameEvent.CardId)
                             ?? throw new InvalidDataException("The relay draw referred to a missing synchronized card.");
                         directDrawer = gameEvent.Drawer ?? "A player";
+                        networkDrawRequested = false;
+                        networkVolunteerPending = directCurrentCard.Keyword == CardKeyword.BlindVolunteer;
                         SetStatus($"{directDrawer} drew a card.");
                         break;
                     case RelayGameEventType.Reset:
-                        directCurrentCard = null; directDrawer = string.Empty; SetStatus(gameEvent.Message); break;
+                        directCurrentCard = null; directDrawer = string.Empty;
+                        networkDrawRequested = false; networkVolunteerPending = false;
+                        SetStatus(gameEvent.Message); break;
                     case RelayGameEventType.GameStarted:
+                        directCurrentCard = null; directDrawer = string.Empty;
+                        networkDrawRequested = false; networkVolunteerPending = false;
                         requestPlayTab = true; SetStatus(gameEvent.Message); break;
                     case RelayGameEventType.GameStateChanged:
                         var relayState = relayGame.Game;
+                        networkVolunteerPending = relayState?.PendingVolunteer is not null;
                         if (relayState?.CurrentCardId is Guid currentRelayCard)
                         {
                             directCurrentCard = selectedDeck.Cards.FirstOrDefault(card => card.Id == currentRelayCard);
@@ -1154,6 +1191,7 @@ public sealed class MainWindow : Window, IDisposable
                         SetStatus(gameEvent.Message);
                         break;
                     case RelayGameEventType.VolunteerResolved:
+                        networkVolunteerPending = false;
                         volunteerResolutionId = null; volunteerDeadlineUnixMilliseconds = 0; volunteerDrawer = string.Empty;
                         if (gameEvent.CardId is Guid relayCardId)
                             directCurrentCard = selectedDeck.Cards.FirstOrDefault(card => card.Id == relayCardId)
@@ -1163,6 +1201,7 @@ public sealed class MainWindow : Window, IDisposable
                         break;
                     case RelayGameEventType.RandomTargetSelected: SetStatus(gameEvent.Message); break;
                     case RelayGameEventType.GameEnded:
+                        networkDrawRequested = false; networkVolunteerPending = false;
                         finalScores = gameEvent.Scores ?? new Dictionary<string, int>();
                         finalWinners = gameEvent.Winners;
                         ImGui.OpenPopup("Game Results");
@@ -1170,13 +1209,14 @@ public sealed class MainWindow : Window, IDisposable
                         break;
                     case RelayGameEventType.RoomClosed:
                         directCurrentCard = null; directDrawer = string.Empty;
+                        networkDrawRequested = false; networkVolunteerPending = false;
                         configuration.RelayReconnectRoomCode = string.Empty;
                         configuration.RelayReconnectToken = string.Empty;
                         saveConfiguration(configuration);
                         _ = relayGame.LeaveAsync();
                         SetStatus(gameEvent.Message);
                         break;
-                    case RelayGameEventType.Error: SetStatus(gameEvent.Message, true); break;
+                    case RelayGameEventType.Error: networkDrawRequested = false; SetStatus(gameEvent.Message, true); break;
                     default: SetStatus(gameEvent.Message); break;
                 }
             }
@@ -1434,20 +1474,29 @@ public sealed class MainWindow : Window, IDisposable
                         directCurrentCard = selectedDeck.Cards.FirstOrDefault(card => card.Id == gameEvent.CardId)
                             ?? throw new InvalidDataException("The shared draw referred to a card that is missing from the synchronized deck.");
                         directDrawer = gameEvent.Drawer ?? "A player";
+                        networkDrawRequested = false;
+                        networkVolunteerPending = directCurrentCard.Keyword == CardKeyword.BlindVolunteer;
                         SetStatus(gameEvent.Message);
                         break;
                     case DirectGameEventType.Reset:
                         directCurrentCard = null;
                         directDrawer = string.Empty;
+                        networkDrawRequested = false;
+                        networkVolunteerPending = false;
                         SetStatus(gameEvent.Message);
                         break;
                     case DirectGameEventType.Error:
+                        networkDrawRequested = false;
                         SetStatus(gameEvent.Message, true);
                         break;
                     case DirectGameEventType.Status:
                         SetStatus(gameEvent.Message);
                         break;
                     case DirectGameEventType.GameStarted:
+                        directCurrentCard = null;
+                        directDrawer = string.Empty;
+                        networkDrawRequested = false;
+                        networkVolunteerPending = false;
                         requestPlayTab = true;
                         SetStatus(gameEvent.Message);
                         break;
@@ -1462,6 +1511,7 @@ public sealed class MainWindow : Window, IDisposable
                         SetStatus(gameEvent.Message);
                         break;
                     case DirectGameEventType.VolunteerResolved:
+                        networkVolunteerPending = false;
                         volunteerResolutionId = null;
                         volunteerDeadlineUnixMilliseconds = 0;
                         volunteerDrawer = string.Empty;
@@ -1481,6 +1531,8 @@ public sealed class MainWindow : Window, IDisposable
                         SetStatus(gameEvent.Message);
                         break;
                     case DirectGameEventType.GameEnded:
+                        networkDrawRequested = false;
+                        networkVolunteerPending = false;
                         finalScores = gameEvent.Scores ?? new Dictionary<string, int>();
                         finalWinners = gameEvent.Winners;
                         ImGui.OpenPopup("Game Results");

@@ -140,6 +140,7 @@ public sealed class RelayGameService : IDisposable
     }
 
     public Task StartGameAsync() => SendAsync("host:start");
+    public Task StartNewGameAsync() => SendAsync("host:new-game");
     public Task RequestDrawAsync() => SendAsync("player:draw");
     public Task SubmitScoreAsync(int value) => SendAsync("player:score", new { value });
     public Task ForcePassAsync() => SendAsync("host:force-pass");

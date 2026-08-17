@@ -32,6 +32,7 @@ public sealed class DeckStore
     private const int CardBackHeight = 998;
     private readonly string decksDirectory;
     private readonly string artworkRoot;
+    private readonly string cardBackLibraryDirectory;
     private readonly Action<Exception, string, string>? logWarning;
     private readonly JsonSerializerOptions jsonOptions = new()
     {
@@ -43,6 +44,7 @@ public sealed class DeckStore
     {
         decksDirectory = Path.Combine(configDirectory, "decks");
         artworkRoot = Path.Combine(decksDirectory, "artwork");
+        cardBackLibraryDirectory = Path.Combine(decksDirectory, "card-backs");
         this.logWarning = logWarning;
     }
 
@@ -95,8 +97,40 @@ public sealed class DeckStore
 
     public string? GetCustomCardBackPath(Deck deck)
     {
+        if (!string.IsNullOrWhiteSpace(deck.CustomCardBackSha256))
+        {
+            var shared = Path.Combine(cardBackLibraryDirectory, $"{deck.CustomCardBackSha256.ToLowerInvariant()}.jpg");
+            if (File.Exists(shared)) return shared;
+        }
         var path = Path.Combine(DeckArtworkDirectory(deck.Id), "card-back.jpg");
         return !string.IsNullOrWhiteSpace(deck.CustomCardBackSha256) && File.Exists(path) ? path : null;
+    }
+
+    public IReadOnlyList<CardBackChoice> GetCardBackChoices()
+    {
+        if (!Directory.Exists(cardBackLibraryDirectory)) return [];
+        return Directory.EnumerateFiles(cardBackLibraryDirectory, "*.jpg")
+            .Select(path => Path.GetFileNameWithoutExtension(path))
+            .Where(hash => hash.Length == 64 && hash.All(Uri.IsHexDigit))
+            .Select(hash =>
+            {
+                var namePath = Path.Combine(cardBackLibraryDirectory, $"{hash}.txt");
+                var name = File.Exists(namePath) ? File.ReadAllText(namePath).Trim() : string.Empty;
+                if (string.IsNullOrWhiteSpace(name)) name = $"Custom Back {hash[..8]}";
+                return new CardBackChoice(hash, name);
+            })
+            .OrderBy(choice => choice.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    public void SelectCustomCardBack(Deck deck, string sha256)
+    {
+        sha256 = sha256.Trim().ToLowerInvariant();
+        if (sha256.Length != 64 || sha256.Any(ch => !Uri.IsHexDigit(ch)) ||
+            !File.Exists(Path.Combine(cardBackLibraryDirectory, $"{sha256}.jpg")))
+            throw new InvalidDataException("The selected card back is missing from the local library.");
+        deck.CustomCardBackSha256 = sha256;
+        Save(deck);
     }
 
     public void SetCustomCardBack(Deck deck, string sourcePath)
@@ -105,16 +139,14 @@ public sealed class DeckStore
         if (!File.Exists(fullPath)) throw new FileNotFoundException("The selected card-back image does not exist.", fullPath);
         if (new FileInfo(fullPath).Length > MaxSourceImageBytes) throw new InvalidDataException("Images must be smaller than 25 MB.");
         var bytes = NormalizeImage(File.ReadAllBytes(fullPath), CardBackWidth, CardBackHeight);
-        Directory.CreateDirectory(DeckArtworkDirectory(deck.Id));
-        File.WriteAllBytes(Path.Combine(DeckArtworkDirectory(deck.Id), "card-back.jpg"), bytes);
-        deck.CustomCardBackSha256 = Hash(bytes);
+        var hash = Hash(bytes);
+        WriteCardBackLibrary(bytes, hash, Path.GetFileNameWithoutExtension(fullPath));
+        deck.CustomCardBackSha256 = hash;
         Save(deck);
     }
 
     public void RemoveCustomCardBack(Deck deck)
     {
-        var path = Path.Combine(DeckArtworkDirectory(deck.Id), "card-back.jpg");
-        if (File.Exists(path)) File.Delete(path);
         deck.CustomCardBackSha256 = string.Empty;
         Save(deck);
     }
@@ -386,8 +418,7 @@ public sealed class DeckStore
         if (!string.IsNullOrWhiteSpace(deck.CustomCardBackSha256))
         {
             if (cardBack is null) throw new InvalidDataException("The imported card back was not included in the deck.");
-            Directory.CreateDirectory(DeckArtworkDirectory(deck.Id));
-            File.WriteAllBytes(Path.Combine(DeckArtworkDirectory(deck.Id), "card-back.jpg"), cardBack);
+            WriteCardBackLibrary(cardBack, deck.CustomCardBackSha256, $"{deck.Name} Card Back");
         }
     }
 
@@ -511,12 +542,30 @@ public sealed class DeckStore
         var path = Path.Combine(DeckArtworkDirectory(deck.Id), "card-back.jpg");
         if (string.IsNullOrWhiteSpace(deck.CustomCardBackSha256) || !File.Exists(path)) return false;
         var bytes = File.ReadAllBytes(path);
-        if (HasImageDimensions(bytes, CardBackWidth, CardBackHeight)) return false;
-        ValidateLegacyCardBack(bytes);
-        var normalized = NormalizeImage(bytes, CardBackWidth, CardBackHeight);
-        File.WriteAllBytes(path, normalized);
-        deck.CustomCardBackSha256 = Hash(normalized);
-        return true;
+        var changed = false;
+        if (!HasImageDimensions(bytes, CardBackWidth, CardBackHeight))
+        {
+            ValidateLegacyCardBack(bytes);
+            bytes = NormalizeImage(bytes, CardBackWidth, CardBackHeight);
+            File.WriteAllBytes(path, bytes);
+            deck.CustomCardBackSha256 = Hash(bytes);
+            changed = true;
+        }
+        WriteCardBackLibrary(bytes, deck.CustomCardBackSha256, $"{deck.Name} Card Back");
+        return changed;
+    }
+
+    private void WriteCardBackLibrary(byte[] bytes, string sha256, string name)
+    {
+        sha256 = sha256.ToLowerInvariant();
+        if (!Hash(bytes).Equals(sha256, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("The custom card back did not pass its integrity check.");
+        ValidateStoredImage(bytes, CardBackWidth, CardBackHeight, "card back");
+        Directory.CreateDirectory(cardBackLibraryDirectory);
+        var imagePath = Path.Combine(cardBackLibraryDirectory, $"{sha256}.jpg");
+        if (!File.Exists(imagePath)) File.WriteAllBytes(imagePath, bytes);
+        var namePath = Path.Combine(cardBackLibraryDirectory, $"{sha256}.txt");
+        if (!File.Exists(namePath)) File.WriteAllText(namePath, CleanArtworkName(name));
     }
 
     private static bool HasImageDimensions(byte[] source, int width, int height)
@@ -592,3 +641,4 @@ public sealed class DeckStore
 public sealed record MergePreview(string SourcePath, string DeckName, string Author, IReadOnlyList<MergePreviewCard> Cards);
 public sealed record MergePreviewCard(int SourceIndex, string Title, string Text, ActivityType Activity, CardCategory Category,
     bool HasCustomArtwork, bool IsDuplicate);
+public sealed record CardBackChoice(string Sha256, string Name);

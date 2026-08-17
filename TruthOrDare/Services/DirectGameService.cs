@@ -70,6 +70,7 @@ public sealed class DirectGameService : IDisposable
     public string CurrentPlayer { get { lock (stateLock) return CurrentPlayerLocked(); } }
     public bool ScoringEnabled { get { lock (stateLock) return scoringEnabled; } }
     public bool AwaitingScores { get { lock (stateLock) return scoringEnabled && scoringDrawer.Length > 0; } }
+    public bool AwaitingVolunteer { get { lock (stateLock) return pendingVolunteer is not null; } }
     public string ScoringDrawer { get { lock (stateLock) return scoringDrawer; } }
     public IReadOnlyDictionary<string, int> Scores { get { lock (stateLock) return new Dictionary<string, int>(scores); } }
     public IReadOnlyCollection<string> SubmittedVoters { get { lock (stateLock) return roundVotes.Keys.ToArray(); } }
@@ -196,6 +197,7 @@ public sealed class DirectGameService : IDisposable
     public void EndGame()
     {
         if (!IsHost) throw new InvalidOperationException("Only the host can end the game.");
+        if (!GameStarted) throw new InvalidOperationException("There is no active game to end.");
         GameResultsNotice? result = null;
         TieBreakStateNotice? tieBreak = null;
         lock (stateLock)
@@ -255,6 +257,7 @@ public sealed class DirectGameService : IDisposable
             }
             turnOrder.Clear();
             turnOrder.AddRange(names);
+            scores.Clear();
             foreach (var name in names) scores[name] = 0;
             scoringDrawer = string.Empty; roundVotes.Clear(); eligibleScoreVoters.Clear(); eligibleScoreVoterCount = 0;
             tieBreakCandidates.Clear(); eligibleTieBreakVoters.Clear(); tieBreakVotes.Clear();
@@ -264,6 +267,13 @@ public sealed class DirectGameService : IDisposable
         }
         BroadcastJson(PacketType.GameState, state);
         events.Enqueue(new DirectGameEvent(DirectGameEventType.GameStarted, $"Game started. {state.CurrentPlayer} draws first."));
+    }
+
+    public void StartNewGame(Deck deck)
+    {
+        if (!IsHost) throw new InvalidOperationException("Only the host can start a new game.");
+        ResetSharedPile(deck);
+        StartGame();
     }
 
     public void RemovePlayer(string name)
@@ -883,6 +893,7 @@ public sealed class DirectGameService : IDisposable
             drawPile.Clear();
             foreach (var id in ids) drawPile.Enqueue(id);
             remaining = drawPile.Count;
+            pendingVolunteer = null;
         }
     }
 

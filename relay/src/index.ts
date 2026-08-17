@@ -281,6 +281,7 @@ export class RelayRoom extends DurableObject<Env> {
       return socket.send(JSON.stringify({ type: "error", message: "Only the host may perform that action." }));
     if (type === "host:configure") return this.configureGame(seat, packet.payload);
     if (type === "host:start") return this.startGame(seat);
+    if (type === "host:new-game") return this.startGame(seat, true);
     if (type === "player:draw") return this.drawCard(seat);
     if (type === "player:score") return this.score(seat, packet.payload);
     if (type === "host:force-pass") return this.forcePass(seat);
@@ -381,11 +382,15 @@ export class RelayRoom extends DurableObject<Env> {
     this.broadcastGameState();
   }
 
-  private async startGame(seat: Seat): Promise<void> {
+  private async startGame(seat: Seat, resetGame = false): Promise<void> {
     const game = this.state!.game;
     if (!seat.host || !game || !this.state!.deckKey) return this.sendError(seat, "Upload and configure the room deck before starting.");
     const connected = [...this.seats.values()].filter(player => player.connected).map(player => player.name);
     if (!connected.length) return this.sendError(seat, "There are no connected players.");
+    if (resetGame) {
+      game.drawPile = this.shuffle([...game.configuredCards]);
+      game.scores = Object.fromEntries([...this.seats.values()].map(player => [player.name, 0]));
+    }
     game.turnOrder = this.shuffle(connected);
     game.turnIndex = 0;
     game.started = true;
@@ -394,7 +399,9 @@ export class RelayRoom extends DurableObject<Env> {
     game.tieBreakCandidates = []; game.eligibleTieVoters = []; game.tieVotes = {};
     this.state!.started = true;
     await this.persist(); await this.publish();
-    this.broadcast({ type: "game-started", currentPlayer: this.currentPlayer(), turnOrder: game.turnOrder });
+    await this.ctx.storage.setAlarm(this.state!.expiresAt);
+    this.broadcast({ type: "game-started", currentPlayer: this.currentPlayer(), turnOrder: game.turnOrder,
+      message: resetGame ? "The host started a new game." : "The host started the game." });
     this.broadcastGameState();
   }
 
@@ -456,7 +463,9 @@ export class RelayRoom extends DurableObject<Env> {
     game.drawPile = this.shuffle([...game.configuredCards]);
     game.currentCardId = undefined; game.currentDrawer = undefined; game.randomTarget = undefined;
     game.pendingVolunteer = undefined; game.scoringDrawer = ""; game.eligibleVoters = []; game.votes = {};
-    await this.persist(); this.broadcast({ type: "reset", remaining: game.drawPile.length }); this.broadcastGameState();
+    await this.persist();
+    await this.ctx.storage.setAlarm(this.state!.expiresAt);
+    this.broadcast({ type: "reset", remaining: game.drawPile.length }); this.broadcastGameState();
   }
 
   private async volunteer(seat: Seat, payload: unknown): Promise<void> {
@@ -474,17 +483,22 @@ export class RelayRoom extends DurableObject<Env> {
     this.broadcast({ type: "volunteer-resolved", resolutionId: pending.resolutionId, cardId: pending.cardId,
       drawer: pending.drawer, selectedPlayer: seat.name, automatic, remaining: game.drawPile.length });
     if (game.scoringEnabled) this.beginScoring(pending.drawer); else this.advanceTurn();
-    await this.persist(); this.broadcastGameState();
+    await this.persist();
+    await this.ctx.storage.setAlarm(this.state!.expiresAt);
+    this.broadcastGameState();
   }
 
   private async endGame(seat: Seat): Promise<void> {
     const game = this.state!.game;
     if (!seat.host || !game) return;
+    if (!game.started) return this.sendError(seat, "There is no active game to end.");
     game.started = false; game.scoringDrawer = ""; game.pendingVolunteer = undefined;
     this.state!.started = false;
     const best = Math.max(0, ...Object.values(game.scores));
     const winners = Object.entries(game.scores).filter(([, score]) => score === best).map(([name]) => name);
-    await this.persist(); await this.publish();
+    await this.persist();
+    await this.ctx.storage.setAlarm(this.state!.expiresAt);
+    await this.publish();
     const eligible = [...this.seats.values()].filter(player => player.connected && !winners.includes(player.name)).map(player => player.name);
     if (winners.length > 1 && eligible.length > 0) {
       game.tieBreakCandidates = winners; game.eligibleTieVoters = eligible; game.tieVotes = {};
