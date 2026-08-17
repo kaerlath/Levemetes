@@ -13,4 +13,7 @@ public sealed class Configuration : IPluginConfiguration
     public bool EnableExperimentalDirectPlay { get; set; }
     public string DirectPublicAddress { get; set; } = string.Empty;
     public int DirectPort { get; set; } = 43871;
+    public string RelayEndpoint { get; set; } = Services.RelayGameService.DefaultEndpoint;
+    public string RelayReconnectRoomCode { get; set; } = string.Empty;
+    public string RelayReconnectToken { get; set; } = string.Empty;
 }

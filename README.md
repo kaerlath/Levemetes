@@ -2,7 +2,7 @@
 
 ![Levemetes icon](images/icon.png)
 
-A local-first challenge-card game for Final Fantasy XIV. It uses native Dalamud/ImGui UI, stores decks in the plugin configuration directory, and has no telemetry or web app. Local play remains the default; an optional experimental Direct Private Game mode connects trusted players without a Levemetes-hosted server.
+A local-first challenge-card game for Final Fantasy XIV. It uses native Dalamud/ImGui UI, stores decks in the plugin configuration directory, and has no telemetry. Local play remains the default. Direct Private Game connects trusted players peer to peer, while the 1.4 beta adds an optional Cloudflare Relay Multiplayer mode.
 
 ## Features
 
@@ -34,6 +34,8 @@ A local-first challenge-card game for Final Fantasy XIV. It uses native Dalamud/
 - Preserve disconnected players' seats for reconnection, skip them while offline, and let the host remove a seat permanently.
 - Resolve `BLIND VOLUNTEER` cards privately with a synchronized 30-second volunteer prompt and host-random fallback, and select another connected player automatically for `RANDOM` cards.
 - Synchronize the host's locked deck and custom artwork once, then share ordered card-draw and reset events without repeatedly transferring card content.
+- Host or join relay rooms for up to sixteen players without configuring a firewall or exposing player IP addresses to one another. Relay rooms may be public, private by room code, and optionally password-protected.
+- Reconnect to a reserved relay seat, browse public rooms by intensity, and retain the same synchronized turns, scoring, volunteering, random selection, and host controls used during a game.
 - Input limits, format-version checks, duplicate-ID repair, safe replacement saves, delete confirmations, and visible error messages.
 
 Draw state is session-only. Deck contents persist, but the draw pile resets when the plugin reloads or a deck changes.
@@ -60,6 +62,14 @@ Direct messages use a random invitation secret, per-connection derived keys, AES
 **IP privacy warning:** direct networking cannot hide the addresses used to route the connection. Guests can see the host's IP address, and the host can see connecting guest addresses. Hashing protects deck integrity and duplicate detection; it does not anonymize IP addresses. Use Direct Private Game only with people you trust.
 
 The host screen can discover its public IPv4 address through `https://api.ipify.org` over HTTPS, or the address can be entered manually. This discovery does not configure Windows Firewall or the router: the selected TCP listening port may still need to be allowed and forwarded to the host computer.
+
+## Relay Multiplayer (1.4 beta)
+
+Relay Multiplayer is a separate tab and does not replace Direct Private Game. Public rooms appear in the room browser; private rooms are joined with their eight-character room code. Either type may use an optional password. The room listing shows the selected intensity, player count, password requirement, and whether play has started.
+
+The host uploads the selected `.levemetesdeck` bundle once. The Worker stores it temporarily in a private R2 bucket, and each guest downloads and verifies the same bundle before joining the synchronized game. The host controls starting, shuffling/resetting, Force Pass, player removal, and ending the game. Relay rooms allow up to sixteen seats and preserve reconnect tokens locally so a disconnected player can reclaim the same seat.
+
+The relay is expected at `https://levemetes-relay.kaerlath.workers.dev`. Worker deployment instructions and configuration live in `relay/README.md`. Version 1.4 should remain a beta until two-client testing confirms room creation, deck transfer, reconnects, scoring, volunteer resolution, and cleanup on the deployed Worker.
 
 ## Requirements
 
@@ -142,7 +152,9 @@ Deck names and optional author names are limited to 80 characters, card text to 
 
 ## Privacy and scope
 
-Local mode does not contact a network service. Direct Private Game opens a host-controlled TCP listener or connects directly to the address in an invitation, transfers the locked deck to joining guests, and synchronizes character labels and game events. The interface does not show peer connection addresses, although direct participants can still discover them using operating-system networking tools. Levemetes does not provide a relay, account service, public lobby, telemetry system, or automatic chat posting.
+Local mode does not contact a network service. Direct Private Game opens a host-controlled TCP listener or connects directly to an invitation address; direct participants can discover peer addresses using operating-system networking tools even though the interface does not display them.
+
+Relay Multiplayer contacts the configured Cloudflare Worker. The Worker sees connection metadata as part of normal Internet routing but never sends player IP addresses to other players. It stores transient room state in Durable Objects and the synchronized deck bundle in a private R2 bucket. Room objects expire automatically, and the configured R2 lifecycle rule removes `rooms/` objects after one day as a cleanup safeguard. The service has no Levemetes account system or telemetry, and it does not post to FFXIV chat automatically. Room codes, passwords, host credentials, and reconnect tokens should be treated as private.
 
 ## License
 

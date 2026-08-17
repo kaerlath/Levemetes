@@ -1,0 +1,16 @@
+{
+  "name": "levemetes-relay",
+  "version": "1.4.0-beta.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260815.1",
+    "typescript": "5.9.2",
+    "wrangler": "4.30.0"
+  }
+}

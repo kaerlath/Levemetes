@@ -5,6 +5,8 @@ using System.IO;
 using System.Linq;
 using System.Numerics;
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading.Tasks;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
@@ -38,6 +40,7 @@ public sealed class MainWindow : Window, IDisposable
     private readonly Configuration configuration;
     private readonly DeckStore store;
     private readonly DirectGameService directGame;
+    private readonly RelayGameService relayGame;
     private readonly Action<Configuration> saveConfiguration;
     private readonly string cardBackPath;
     private readonly string templateDirectory;
@@ -88,8 +91,15 @@ public sealed class MainWindow : Window, IDisposable
     private readonly HashSet<int> mergeSelectedCards = [];
     private bool requestMergePreviewPopup;
     private bool statusRenderedThisFrame;
+    private string relayEndpoint;
+    private string relayRoomName = string.Empty;
+    private string relayRoomCode = string.Empty;
+    private string relayPassword = string.Empty;
+    private bool relayPrivateRoom;
+    private bool relayScoringEnabled;
+    private Task? relayTask;
 
-    public MainWindow(Configuration configuration, DeckStore store, DirectGameService directGame, Action<Configuration> saveConfiguration,
+    public MainWindow(Configuration configuration, DeckStore store, DirectGameService directGame, RelayGameService relayGame, Action<Configuration> saveConfiguration,
         string cardBackPath, string templateDirectory, string artworkDirectory)
         : base("Levemetes##LevemetesMain")
     {
@@ -101,6 +111,7 @@ public sealed class MainWindow : Window, IDisposable
         this.configuration = configuration;
         this.store = store;
         this.directGame = directGame;
+        this.relayGame = relayGame;
         this.saveConfiguration = saveConfiguration;
         this.cardBackPath = cardBackPath;
         this.templateDirectory = templateDirectory;
@@ -108,6 +119,8 @@ public sealed class MainWindow : Window, IDisposable
         directGameHelpPath = Path.Combine(Path.GetDirectoryName(cardBackPath) ?? string.Empty, "DirectPrivateGameHelp.txt");
         gameInstructionsPath = Path.Combine(Path.GetDirectoryName(cardBackPath) ?? string.Empty, "GameInstructions.txt");
         directPublicAddress = configuration.DirectPublicAddress;
+        relayEndpoint = string.IsNullOrWhiteSpace(configuration.RelayEndpoint) ? RelayGameService.DefaultEndpoint : configuration.RelayEndpoint;
+        relayGame.SetEndpoint(relayEndpoint);
         directPort = configuration.DirectPort;
         const float cardFontSize = 19f;
         cardFont = CreateCardFont(cardFontSize, false, false);
@@ -141,6 +154,7 @@ public sealed class MainWindow : Window, IDisposable
         PushLevemetesTheme();
         DrawWindowTitle();
         ProcessDirectGameEvents();
+        ProcessRelayGameEvents();
         DrawDeckSelector();
         GoldSeparator();
         if (ImGui.BeginTabBar("MainTabs"))
@@ -152,6 +166,8 @@ public sealed class MainWindow : Window, IDisposable
             { DrawActiveTabAccent(); DrawCardsTab(); ImGui.EndTabItem(); }
             if (ImGui.BeginTabItem("Decks & Sharing"))
             { DrawActiveTabAccent(); DrawDecksTab(); ImGui.EndTabItem(); }
+            if (ImGui.BeginTabItem("Multiplayer"))
+            { DrawActiveTabAccent(); DrawRelayGameTab(); ImGui.EndTabItem(); }
             if (ImGui.BeginTabItem("Direct Private Game"))
             { DrawActiveTabAccent(); DrawDirectGameTab(); ImGui.EndTabItem(); }
             ImGui.EndTabBar();
@@ -310,12 +326,13 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawDeckSelector()
     {
+        var networkConnected = directGame.IsConnected || relayGame.IsConnected;
         ImGui.PushStyleColor(ImGuiCol.FrameBg, new Vector4(.065f, .060f, .068f, 1f));
         ImGui.AlignTextToFramePadding();
         ImGui.TextColored(ThemeGoldBright, "DECK");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(260 * ImGuiHelpers.GlobalScale);
-        if (directGame.IsConnected) ImGui.BeginDisabled();
+        if (networkConnected) ImGui.BeginDisabled();
         if (ImGui.BeginCombo("##Deck", selectedDeck.Name))
         {
             foreach (var deck in decks)
@@ -324,7 +341,7 @@ public sealed class MainWindow : Window, IDisposable
             }
             ImGui.EndCombo();
         }
-        if (directGame.IsConnected) ImGui.EndDisabled();
+        if (networkConnected) ImGui.EndDisabled();
         ImGui.SameLine();
         if (!string.IsNullOrWhiteSpace(selectedDeck.Author))
         {
@@ -337,19 +354,22 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TextDisabled($"• {(selectedDeck.LastEditedAtUtc is null ? "Imported" : "Updated")} {timestamp.ToLocalTime():MMM d, yyyy}");
             ImGui.SameLine();
         }
-        ImGui.TextDisabled($"• {(directGame.IsConnected ? directGame.Remaining : session.Remaining)} remaining");
+        var remaining = directGame.IsConnected ? directGame.Remaining : relayGame.IsConnected ? relayGame.Game?.Remaining ?? 0 : session.Remaining;
+        ImGui.TextDisabled($"• {remaining} remaining");
         ImGui.PopStyleColor();
     }
 
     private void DrawPlayTab()
     {
+        var relayState = relayGame.Game;
+        var networkConnected = directGame.IsConnected || relayGame.IsConnected;
         ImGui.Spacing();
         SectionHeading("Play a Levemete");
         ImGui.AlignTextToFramePadding();
         ImGui.TextUnformatted("Intensity (Heat) Category");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(180 * ImGuiHelpers.GlobalScale);
-        if (directGame.IsConnected) ImGui.BeginDisabled();
+        if (networkConnected) ImGui.BeginDisabled();
         if (ImGui.BeginCombo("##PlayCategory", CategoryLabel(playCategory)))
         {
             foreach (var category in BasicCategories)
@@ -365,7 +385,7 @@ public sealed class MainWindow : Window, IDisposable
             }
             ImGui.EndCombo();
         }
-        if (directGame.IsConnected) ImGui.EndDisabled();
+        if (networkConnected) ImGui.EndDisabled();
         var categoryCount = selectedDeck.Cards.Count(card => card.Category.HasFlag(playCategory));
         ImGui.SameLine();
         ImGui.TextDisabled($"{categoryCount} cards");
@@ -392,8 +412,26 @@ public sealed class MainWindow : Window, IDisposable
             }
             if (!directGame.IsHost) ImGui.TextDisabled("Only the host can Shuffle / Reset the shared deck.");
         }
+        else if (relayGame.IsConnected)
+        {
+            ImGui.Spacing();
+            ImGui.TextUnformatted($"Relay Multiplayer Players ({relayGame.Players.Count}/16)");
+            foreach (var player in relayGame.Players)
+            {
+                var isCurrent = relayState?.Started == true && player.Name.Equals(relayState.CurrentPlayer, StringComparison.OrdinalIgnoreCase);
+                var isAwaitingScore = !string.IsNullOrWhiteSpace(relayState?.ScoringDrawer) &&
+                    relayState.EligibleVoters.Contains(player.Name, StringComparer.OrdinalIgnoreCase) &&
+                    !relayState.SubmittedVoters.Contains(player.Name, StringComparer.OrdinalIgnoreCase);
+                var suffix = isCurrent ? " - current turn" : isAwaitingScore ? " - awaiting score" : player.Connected ? string.Empty : " - disconnected";
+                var color = isCurrent ? new Vector4(.95f, .78f, .30f, 1f) : isAwaitingScore
+                    ? new Vector4(1f, .60f, .25f, 1f) : player.Connected ? Vector4.One : new Vector4(.6f, .6f, .6f, 1f);
+                ImGui.Bullet(); ImGui.SameLine();
+                ImGui.TextColored(color, player.Name + (player.Host ? " (Host)" : string.Empty) + suffix);
+            }
+            if (!relayGame.IsHost) ImGui.TextDisabled("Only the host can Shuffle / Reset the shared deck.");
+        }
         ImGui.Dummy(new Vector2(0, ImGui.GetTextLineHeightWithSpacing() * 2));
-        if (directGame.IsConnected && !string.IsNullOrWhiteSpace(directDrawer))
+        if (networkConnected && !string.IsNullOrWhiteSpace(directDrawer))
         {
             var drawerLabel = $"{directDrawer} drew this card";
             ImGui.SetWindowFontScale(1.15f);
@@ -415,7 +453,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, Vector2.Zero);
         ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(0.72f, 0.59f, 0.27f, 1f));
         ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.08f, 0.07f, 0.12f, 0.98f));
-        var displayedCard = directGame.IsConnected ? directCurrentCard : session.CurrentCard;
+        var displayedCard = networkConnected ? directCurrentCard : session.CurrentCard;
         if (ImGui.BeginChild("CardFace", cardSize, true))
         {
             if (displayedCard is null)
@@ -468,6 +506,28 @@ public sealed class MainWindow : Window, IDisposable
             foreach (var pair in directGame.Scores.OrderByDescending(pair => pair.Value))
                 ImGui.TextDisabled($"{pair.Key}: {pair.Value}");
         }
+        else if (relayGame.IsConnected && relayState?.ScoringEnabled == true)
+        {
+            ImGui.Spacing();
+            FormSectionHeading("SCORING");
+            var local = GetLocalCharacterLabel() ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(relayState.ScoringDrawer))
+            {
+                ImGui.TextWrapped($"Scoring {relayState.ScoringDrawer}'s turn • {relayState.SubmittedVoters.Count}/{relayState.EligibleVoters.Count} submitted");
+                var mayVote = relayState.EligibleVoters.Contains(local, StringComparer.OrdinalIgnoreCase) &&
+                    !relayState.SubmittedVoters.Contains(local, StringComparer.OrdinalIgnoreCase);
+                if (!mayVote) ImGui.BeginDisabled();
+                for (var score = 0; score <= 5; score++)
+                {
+                    if (score > 0 && score % 3 != 0) ImGui.SameLine();
+                    if (ImGui.Button(score.ToString(), new Vector2(38, 32) * ImGuiHelpers.GlobalScale))
+                        relayTask = relayGame.SubmitScoreAsync(score);
+                }
+                if (!mayVote) ImGui.EndDisabled();
+            }
+            foreach (var pair in relayState.Scores.OrderByDescending(pair => pair.Value))
+                ImGui.TextDisabled($"{pair.Key}: {pair.Value}");
+        }
 
         if (directGame.IsConnected && directGame.AwaitingTieBreak)
         {
@@ -484,6 +544,19 @@ public sealed class MainWindow : Window, IDisposable
             }
             if (!mayVote) ImGui.EndDisabled();
         }
+        else if (relayGame.IsConnected && relayState is { TieBreakCandidates.Count: > 0 })
+        {
+            ImGui.Spacing();
+            FormSectionHeading("TIE-BREAK VOTE");
+            ImGui.TextWrapped("Players outside the tie may choose the winner. If the deciding vote remains tied, victory is shared.");
+            var local = GetLocalCharacterLabel() ?? string.Empty;
+            var mayVote = relayState.EligibleTieVoters.Contains(local, StringComparer.OrdinalIgnoreCase) &&
+                !relayState.SubmittedTieVoters.Contains(local, StringComparer.OrdinalIgnoreCase);
+            if (!mayVote) ImGui.BeginDisabled();
+            foreach (var candidate in relayState.TieBreakCandidates)
+                if (ImGui.Button($"Vote for {candidate}", new Vector2(-1, 0))) relayTask = relayGame.SubmitTieBreakAsync(candidate);
+            if (!mayVote) ImGui.EndDisabled();
+        }
 
         ImGui.Spacing();
         FormSectionHeading("CARD ACTIONS");
@@ -498,39 +571,49 @@ public sealed class MainWindow : Window, IDisposable
 
         ImGui.Spacing();
         var localPlayer = GetLocalCharacterLabel();
-        var directTurnReady = !directGame.IsConnected ||
-            (directGame.GameStarted && string.Equals(directGame.CurrentPlayer, localPlayer, StringComparison.OrdinalIgnoreCase));
-        var canDraw = categoryCount > 0 && (directGame.IsConnected ? directGame.Remaining : session.Remaining) > 0 && directTurnReady && !directGame.AwaitingScores;
+        var turnReady = !networkConnected ||
+            (directGame.IsConnected
+                ? directGame.GameStarted && string.Equals(directGame.CurrentPlayer, localPlayer, StringComparison.OrdinalIgnoreCase)
+                : relayState?.Started == true && string.Equals(relayState.CurrentPlayer, localPlayer, StringComparison.OrdinalIgnoreCase));
+        var remainingCards = directGame.IsConnected ? directGame.Remaining : relayGame.IsConnected ? relayState?.Remaining ?? 0 : session.Remaining;
+        var awaitingScores = directGame.IsConnected ? directGame.AwaitingScores : relayGame.IsConnected && !string.IsNullOrWhiteSpace(relayState?.ScoringDrawer);
+        var canDraw = categoryCount > 0 && remainingCards > 0 && turnReady && !awaitingScores;
         if (!canDraw) ImGui.BeginDisabled();
         if (ImGui.Button("Draw", railButtonSize))
         {
             if (directGame.IsConnected) directGame.RequestDraw();
+            else if (relayGame.IsConnected) relayTask = relayGame.RequestDrawAsync();
             else session.Draw(selectedDeck, playCategory);
         }
         if (!canDraw) ImGui.EndDisabled();
         ImGui.Spacing();
-        if (directGame.IsConnected && !directGame.IsHost) ImGui.BeginDisabled();
+        var networkHost = directGame.IsConnected ? directGame.IsHost : relayGame.IsConnected && relayGame.IsHost;
+        if (networkConnected && !networkHost) ImGui.BeginDisabled();
         if (ImGui.Button("Shuffle / Reset", railButtonSize))
         {
             if (directGame.IsConnected) directGame.ResetSharedPile(selectedDeck);
+            else if (relayGame.IsConnected) relayTask = relayGame.ResetAsync();
             else { session.Reset(selectedDeck, playCategory); SetStatus("Draw pile shuffled."); }
         }
-        if (directGame.IsConnected && !directGame.IsHost) ImGui.EndDisabled();
-        if (directGame.IsConnected && !directGame.IsHost && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        if (networkConnected && !networkHost) ImGui.EndDisabled();
+        if (networkConnected && !networkHost && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
             ImGui.SetTooltip("Only the host can shuffle and reset the shared deck.");
-        if (directGame.IsConnected)
+        if (networkConnected)
         {
             ImGui.Spacing();
-            if (!directGame.IsHost) ImGui.BeginDisabled();
-            if (ImGui.Button("End Game", railButtonSize)) directGame.EndGame();
-            if (!directGame.IsHost) ImGui.EndDisabled();
+            if (!networkHost) ImGui.BeginDisabled();
+            if (ImGui.Button("End Game", railButtonSize))
+            {
+                if (directGame.IsConnected) directGame.EndGame(); else relayTask = relayGame.EndGameAsync();
+            }
+            if (!networkHost) ImGui.EndDisabled();
         }
-        if (categoryCount > 0 && (directGame.IsConnected ? directGame.Remaining : session.Remaining) == 0)
-            ImGui.TextDisabled(directGame.IsConnected && !directGame.IsHost ? "No shared cards remain. The host must shuffle and reset." : "No cards remain in this category. Shuffle / Reset to play again.");
-        else if (directGame.IsConnected && !directGame.GameStarted)
+        if (categoryCount > 0 && remainingCards == 0)
+            ImGui.TextDisabled(networkConnected && !networkHost ? "No shared cards remain. The host must shuffle and reset." : "No cards remain in this category. Shuffle / Reset to play again.");
+        else if (networkConnected && !(directGame.IsConnected ? directGame.GameStarted : relayState?.Started == true))
             ImGui.TextDisabled("Waiting for the host to start the game.");
-        else if (directGame.IsConnected && !directTurnReady)
-            ImGui.TextDisabled($"Waiting for {directGame.CurrentPlayer} to draw.");
+        else if (networkConnected && !turnReady)
+            ImGui.TextDisabled($"Waiting for {(directGame.IsConnected ? directGame.CurrentPlayer : relayState?.CurrentPlayer)} to draw.");
         if (directGame.IsConnected && directGame.IsHost)
         {
             ImGui.Spacing();
@@ -542,16 +625,27 @@ public sealed class MainWindow : Window, IDisposable
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
                 ImGui.SetTooltip("Assign 3 points for each eligible player who has not scored this turn.");
         }
+        else if (relayGame.IsConnected && relayGame.IsHost)
+        {
+            ImGui.Spacing();
+            var canForcePass = !string.IsNullOrWhiteSpace(relayState?.ScoringDrawer) &&
+                relayState!.SubmittedVoters.Count < relayState.EligibleVoters.Count;
+            if (!canForcePass) ImGui.BeginDisabled();
+            if (ImGui.Button("Force Pass", railButtonSize)) relayTask = relayGame.ForcePassAsync();
+            if (!canForcePass) ImGui.EndDisabled();
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip("Assign 3 points for each eligible player who has not scored this turn.");
+        }
         ImGui.EndChild();
     }
 
     private void DrawCardsTab()
     {
         ImGui.Spacing();
-        if (directGame.IsConnected)
+        if (directGame.IsConnected || relayGame.IsConnected)
         {
             SectionHeading("Cards");
-            ImGui.TextWrapped("The synchronized deck is locked while Direct Private Game is connected. Leave the room to edit cards.");
+            ImGui.TextWrapped("The synchronized deck is locked while a multiplayer room is connected. Leave the room to edit cards.");
             return;
         }
 
@@ -823,9 +917,9 @@ public sealed class MainWindow : Window, IDisposable
     {
         ImGui.Spacing();
         SectionHeading("Decks & Sharing");
-        if (directGame.IsConnected)
+        if (directGame.IsConnected || relayGame.IsConnected)
         {
-            ImGui.TextWrapped("Deck management and sharing are locked while Direct Private Game is connected. Leave the room to make changes.");
+            ImGui.TextWrapped("Deck management and sharing are locked while a multiplayer room is connected. Leave the room to make changes.");
             return;
         }
         FormSectionHeading("CREATE DECK");
@@ -864,6 +958,235 @@ public sealed class MainWindow : Window, IDisposable
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
             ImGui.SetTooltip(lastExportPath is null ? "Export a deck first" : "Open the exported deck's folder");
         ImGui.TextDisabled($"Your live deck files are stored in: {store.DecksDirectory}");
+    }
+
+    private void DrawRelayGameTab()
+    {
+        ImGui.Spacing();
+        SectionHeading("Relay Multiplayer");
+        ImGui.TextWrapped("Create or join an online room without exposing player IP addresses. The host's selected deck and custom artwork are synchronized once and locked for everyone in the room.");
+        ImGui.TextColored(new Vector4(.95f, .78f, .30f, 1f), "Beta feature — relay rooms may change while 1.4.0 is being tested.");
+
+        if (ImGui.CollapsingHeader("Relay connection settings"))
+        {
+            ImGui.SetNextItemWidth(MathF.Min(520 * ImGuiHelpers.GlobalScale, ImGui.GetContentRegionAvail().X));
+            if (ImGui.InputText("Relay address", ref relayEndpoint, 512)) { }
+            ImGui.SameLine();
+            if (ImGui.Button("Save##RelayEndpoint"))
+            {
+                TryAction(() => relayGame.SetEndpoint(relayEndpoint));
+                configuration.RelayEndpoint = relayEndpoint.Trim().TrimEnd('/');
+                saveConfiguration(configuration);
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("Check Relay") && relayTask is null)
+                relayTask = relayGame.CheckHealthAsync();
+            ImGui.TextDisabled("Official beta endpoint: https://levemetes-relay.kaerlath.workers.dev");
+        }
+
+        var characterLabel = GetLocalCharacterLabel();
+        ImGui.TextUnformatted("Playing as");
+        ImGui.SameLine();
+        if (characterLabel is null) ImGui.TextColored(new Vector4(1f, .35f, .35f, 1f), "Log in to a character to use relay multiplayer");
+        else ImGui.TextColored(new Vector4(.45f, .9f, .55f, 1f), characterLabel);
+
+        if (relayGame.IsConnected)
+        {
+            var room = relayGame.Room;
+            ImGui.Separator();
+            ImGui.TextColored(new Vector4(.45f, .9f, .55f, 1f), relayGame.IsHost ? "Hosting Relay Room" : "Connected to Relay Room");
+            if (room is not null)
+            {
+                ImGui.TextUnformatted($"{room.Name}  •  Code: {room.Code}");
+                ImGui.TextDisabled($"Host: {room.Host}  •  {room.Players}/{room.Capacity} players  •  {string.Join(", ", room.Intensity)}");
+            }
+            FormSectionHeading($"PLAYERS ({relayGame.Players.Count}/16)");
+            foreach (var player in relayGame.Players)
+            {
+                ImGui.Bullet(); ImGui.SameLine();
+                ImGui.TextColored(player.Connected ? Vector4.One : new Vector4(.6f, .6f, .6f, 1f),
+                    player.Name + (player.Host ? " (Host)" : string.Empty) + (player.Connected ? string.Empty : " (reconnecting)"));
+                if (relayGame.IsHost && !player.Host)
+                {
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton($"Remove##Relay{player.Id}")) relayTask = relayGame.RemovePlayerAsync(player.Name);
+                }
+            }
+            if (relayGame.IsHost && relayGame.Game?.Started != true)
+            {
+                ImGui.Spacing();
+                if (ImGui.Button("Start Game", new Vector2(180, 36) * ImGuiHelpers.GlobalScale))
+                    relayTask = relayGame.StartGameAsync();
+                ImGui.SameLine(); ImGui.TextDisabled("Randomizes the first player and synchronized turn order.");
+            }
+            else if (relayGame.Game?.Started == true)
+                ImGui.TextUnformatted($"Current turn: {relayGame.Game.CurrentPlayer}");
+            ImGui.Spacing();
+            if (ImGui.Button(relayGame.IsHost ? "Close Relay Room" : "Leave Relay Room") && relayTask is null)
+                relayTask = relayGame.IsHost ? relayGame.CloseRoomAsync() : relayGame.LeaveAsync();
+            return;
+        }
+
+        var waiting = relayTask is not null || relayGame.IsBusy;
+        if (waiting) ImGui.TextDisabled("Contacting the relay…");
+
+        FormSectionHeading("PUBLIC ROOMS");
+        if (waiting) ImGui.BeginDisabled();
+        if (ImGui.Button("Refresh Public Rooms")) relayTask = relayGame.RefreshRoomsAsync();
+        if (waiting) ImGui.EndDisabled();
+        if (relayGame.PublicRooms.Count == 0) ImGui.TextDisabled("No public rooms loaded. Select Refresh Public Rooms.");
+        foreach (var room in relayGame.PublicRooms)
+        {
+            ImGui.PushID(room.Code);
+            ImGui.TextUnformatted(room.Name);
+            ImGui.SameLine();
+            ImGui.TextDisabled($"{room.Players}/{room.Capacity} • {string.Join(", ", room.Intensity)}{(room.PasswordProtected ? " • Password" : string.Empty)}");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Select")) relayRoomCode = room.Code;
+            ImGui.PopID();
+        }
+
+        FormSectionHeading("CREATE A RELAY ROOM");
+        ImGui.SetNextItemWidth(360 * ImGuiHelpers.GlobalScale);
+        ImGui.InputTextWithHint("Room name##Relay", "Room name", ref relayRoomName, 80);
+        ImGui.Checkbox("Private room (join by code)", ref relayPrivateRoom);
+        ImGui.SameLine();
+        ImGui.Checkbox("Enable scoring (0–5)", ref relayScoringEnabled);
+        ImGui.SetNextItemWidth(300 * ImGuiHelpers.GlobalScale);
+        ImGui.InputTextWithHint("Optional password##RelayCreate", "Leave blank for no password", ref relayPassword, 128, ImGuiInputTextFlags.Password);
+        ImGui.TextWrapped($"Selected deck: {selectedDeck.Name}  •  Intensity: {CategoryLabel(playCategory)}");
+        if (waiting || characterLabel is null || string.IsNullOrWhiteSpace(relayRoomName)) ImGui.BeginDisabled();
+        if (ImGui.Button("Create Relay Room", new Vector2(190, 36) * ImGuiHelpers.GlobalScale))
+        {
+            try
+            {
+                relayGame.SetEndpoint(relayEndpoint);
+                var bundle = store.ExportBundleBytes(selectedDeck);
+                var relayCards = selectedDeck.Cards.Where(card => card.Category.HasFlag(playCategory))
+                    .Select(card => new RelayCardDefinition(card.Id, card.Keyword?.ToString() ?? string.Empty)).ToArray();
+                relayTask = relayGame.CreateRoomAsync(relayRoomName, characterLabel!, relayPrivateRoom, relayPassword,
+                    [CategoryLabel(playCategory)], bundle, relayCards, relayScoringEnabled);
+            }
+            catch (Exception ex) { SetStatus(ex.Message, true); }
+        }
+        if (waiting || characterLabel is null || string.IsNullOrWhiteSpace(relayRoomName)) ImGui.EndDisabled();
+
+        FormSectionHeading("JOIN A RELAY ROOM");
+        ImGui.SetNextItemWidth(180 * ImGuiHelpers.GlobalScale);
+        ImGui.InputTextWithHint("Room code##RelayJoin", "Eight-character code", ref relayRoomCode, 8);
+        ImGui.SetNextItemWidth(300 * ImGuiHelpers.GlobalScale);
+        ImGui.InputTextWithHint("Password##RelayJoin", "Only if the room requires one", ref relayPassword, 128, ImGuiInputTextFlags.Password);
+        ImGui.TextDisabled("Joining downloads and verifies the host's deck and custom artwork before play.");
+        if (waiting || characterLabel is null || relayRoomCode.Trim().Length != 8) ImGui.BeginDisabled();
+        if (ImGui.Button("Join Relay Room", new Vector2(190, 36) * ImGuiHelpers.GlobalScale))
+        {
+            relayGame.SetEndpoint(relayEndpoint);
+            var reconnect = configuration.RelayReconnectRoomCode.Equals(relayRoomCode.Trim(), StringComparison.OrdinalIgnoreCase)
+                ? UnprotectReconnectToken(configuration.RelayReconnectToken) : string.Empty;
+            relayTask = relayGame.JoinRoomAsync(relayRoomCode, characterLabel!, relayPassword, reconnect);
+        }
+        if (waiting || characterLabel is null || relayRoomCode.Trim().Length != 8) ImGui.EndDisabled();
+    }
+
+    private void ProcessRelayGameEvents()
+    {
+        if (relayTask is { IsCompleted: true } completedTask)
+        {
+            relayTask = null;
+            try { completedTask.GetAwaiter().GetResult(); }
+            catch (Exception ex) { Plugin.Log.Warning(ex, "Relay multiplayer command failed"); SetStatus(ex.Message, true); }
+        }
+        while (relayGame.TryDequeue(out var gameEvent))
+        {
+            try
+            {
+                switch (gameEvent.Type)
+                {
+                    case RelayGameEventType.DeckReceived:
+                        if (gameEvent.Bundle is null) throw new InvalidDataException("The relay returned an empty deck bundle.");
+                        var synchronizedDeck = store.ImportBundleBytes(gameEvent.Bundle);
+                        decks.Add(synchronizedDeck);
+                        SelectDeck(synchronizedDeck);
+                        if (gameEvent.Room?.Intensity.FirstOrDefault() is string intensity)
+                            playCategory = BasicCategories.FirstOrDefault(category => CategoryLabel(category).Equals(intensity, StringComparison.OrdinalIgnoreCase));
+                        configuration.RelayReconnectRoomCode = gameEvent.Room?.Code ?? string.Empty;
+                        configuration.RelayReconnectToken = ProtectReconnectToken(relayGame.ReconnectToken);
+                        saveConfiguration(configuration);
+                        SetStatus(gameEvent.Message);
+                        break;
+                    case RelayGameEventType.RoomJoined:
+                        configuration.RelayReconnectRoomCode = gameEvent.Room?.Code ?? string.Empty;
+                        configuration.RelayReconnectToken = ProtectReconnectToken(relayGame.ReconnectToken);
+                        saveConfiguration(configuration);
+                        SetStatus(gameEvent.Message);
+                        break;
+                    case RelayGameEventType.CardDrawn:
+                        directCurrentCard = selectedDeck.Cards.FirstOrDefault(card => card.Id == gameEvent.CardId)
+                            ?? throw new InvalidDataException("The relay draw referred to a missing synchronized card.");
+                        directDrawer = gameEvent.Drawer ?? "A player";
+                        SetStatus($"{directDrawer} drew a card.");
+                        break;
+                    case RelayGameEventType.Reset:
+                        directCurrentCard = null; directDrawer = string.Empty; SetStatus(gameEvent.Message); break;
+                    case RelayGameEventType.GameStarted:
+                        requestPlayTab = true; SetStatus(gameEvent.Message); break;
+                    case RelayGameEventType.GameStateChanged:
+                        var relayState = relayGame.Game;
+                        if (relayState?.CurrentCardId is Guid currentRelayCard)
+                        {
+                            directCurrentCard = selectedDeck.Cards.FirstOrDefault(card => card.Id == currentRelayCard);
+                            directDrawer = relayState.CurrentDrawer ?? directDrawer;
+                        }
+                        if (relayState?.PendingVolunteer is { } pending &&
+                            !pending.Drawer.Equals(GetLocalCharacterLabel(), StringComparison.OrdinalIgnoreCase))
+                        {
+                            volunteerResolutionId = pending.ResolutionId;
+                            volunteerDeadlineUnixMilliseconds = pending.Deadline;
+                            volunteerDrawer = pending.Drawer;
+                        }
+                        if (relayState?.Started == true) requestPlayTab = true;
+                        break;
+                    case RelayGameEventType.VolunteerPrompt:
+                        volunteerResolutionId = gameEvent.ResolutionId;
+                        volunteerDeadlineUnixMilliseconds = gameEvent.DeadlineUnixMilliseconds;
+                        volunteerDrawer = gameEvent.Drawer ?? "A player";
+                        ImGui.OpenPopup("Blind Volunteer Needed");
+                        SetStatus(gameEvent.Message);
+                        break;
+                    case RelayGameEventType.VolunteerResolved:
+                        volunteerResolutionId = null; volunteerDeadlineUnixMilliseconds = 0; volunteerDrawer = string.Empty;
+                        if (gameEvent.CardId is Guid relayCardId)
+                            directCurrentCard = selectedDeck.Cards.FirstOrDefault(card => card.Id == relayCardId)
+                                ?? throw new InvalidDataException("The resolved relay card is missing from the synchronized deck.");
+                        directDrawer = gameEvent.Drawer ?? directDrawer;
+                        SetStatus(gameEvent.Message);
+                        break;
+                    case RelayGameEventType.RandomTargetSelected: SetStatus(gameEvent.Message); break;
+                    case RelayGameEventType.GameEnded:
+                        finalScores = gameEvent.Scores ?? new Dictionary<string, int>();
+                        finalWinners = gameEvent.Winners;
+                        ImGui.OpenPopup("Game Results");
+                        SetStatus(gameEvent.Message);
+                        break;
+                    case RelayGameEventType.RoomClosed:
+                        directCurrentCard = null; directDrawer = string.Empty;
+                        configuration.RelayReconnectRoomCode = string.Empty;
+                        configuration.RelayReconnectToken = string.Empty;
+                        saveConfiguration(configuration);
+                        _ = relayGame.LeaveAsync();
+                        SetStatus(gameEvent.Message);
+                        break;
+                    case RelayGameEventType.Error: SetStatus(gameEvent.Message, true); break;
+                    default: SetStatus(gameEvent.Message); break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.Error(ex, "Could not process a Relay Multiplayer event");
+                SetStatus(ex.Message, true);
+                _ = relayGame.LeaveAsync();
+            }
+        }
     }
 
     private void DrawDirectGameTab()
@@ -1067,6 +1390,19 @@ public sealed class MainWindow : Window, IDisposable
         ? value[..^7]
         : value;
 
+    private static string ProtectReconnectToken(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        return Convert.ToBase64String(ProtectedData.Protect(Encoding.UTF8.GetBytes(value), null, DataProtectionScope.CurrentUser));
+    }
+
+    private static string UnprotectReconnectToken(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        try { return Encoding.UTF8.GetString(ProtectedData.Unprotect(Convert.FromBase64String(value), null, DataProtectionScope.CurrentUser)); }
+        catch { return string.Empty; }
+    }
+
     private static string? GetLocalCharacterLabel()
     {
         if (!Plugin.PlayerState.IsLoaded) return null;
@@ -1221,7 +1557,8 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SetCursorPosX((ImGui.GetWindowSize().X - buttonSize.X) / 2);
         if (ImGui.Button("I VOLUNTEER", buttonSize))
         {
-            directGame.Volunteer(resolutionId);
+            if (relayGame.IsConnected) relayTask = relayGame.VolunteerAsync(resolutionId);
+            else directGame.Volunteer(resolutionId);
             volunteerResolutionId = null;
             SetStatus("Volunteer request sent. The first request accepted by the host will be chosen.");
             ImGui.CloseCurrentPopup();
