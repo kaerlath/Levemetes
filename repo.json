@@ -3,10 +3,10 @@
     "Author": "Lynnaes Krazikaz",
     "Name": "Levemetes",
     "InternalName": "Levemetes",
-    "AssemblyVersion": "1.4.0.1",
-    "TestingAssemblyVersion": "1.4.0.1",
+    "AssemblyVersion": "1.4.1.0",
+    "TestingAssemblyVersion": "1.4.1.0",
+    "TestingChangelog": "Levemetes 1.4.1 adds private room code copying and improved lag-tolerant BLIND VOLUNTEER selection.",
     "TestingDalamudApiLevel": 15,
-    "TestingChangelog": "Levemetes 1.4.0 adds Relay Multiplayer, reusable card backs, Start New Game, and multiplayer control fixes.",
     "Description": "Player-run levemetes card game for truth or dare shenanigans.  Categorized play with custom decks that can be created and shared between players!  Open with /levemetes",
     "ApplicableVersion": "any",
     "RepoUrl": "https://github.com/kaerlath/Levemetes",
@@ -15,9 +15,9 @@
     "Punchline": "Draw locally stored challenge cards in game.",
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/kaerlath/Levemetes/releases/download/1.4.0/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/kaerlath/Levemetes/releases/download/1.4.0/latest.zip",
-    "DownloadLinkTesting": "https://github.com/kaerlath/Levemetes/releases/download/1.4.0/latest.zip",
-    "LastUpdate": "1787001186"
+    "DownloadLinkInstall": "https://github.com/kaerlath/Levemetes/releases/download/1.4.1/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/kaerlath/Levemetes/releases/download/1.4.1/latest.zip",
+    "DownloadLinkTesting": "https://github.com/kaerlath/Levemetes/releases/download/1.4.1/latest.zip",
+    "LastUpdate": "1787023940"
   }
 ]
