@@ -146,6 +146,8 @@ public sealed class RelayGameService : IDisposable
     public Task ForcePassAsync() => SendAsync("host:force-pass");
     public Task ResetAsync() => SendAsync("host:reset");
     public Task VolunteerAsync(Guid resolutionId) => SendAsync("player:volunteer", new { resolutionId });
+    public Task SetObserverAsync(bool observer) => SendAsync("player:set-observer", new { observer });
+    public Task SetPlayerObserverAsync(string name, bool observer) => SendAsync("host:set-observer", new { name, observer });
     public Task EndGameAsync() => SendAsync("host:end");
     public Task SubmitTieBreakAsync(string candidate) => SendAsync("player:tie-break", new { candidate });
     public Task RemovePlayerAsync(string name) => SendAsync("host:remove", new { name });
@@ -320,7 +322,7 @@ public sealed class RelayGameService : IDisposable
 public sealed record RelayRoomSummary(string Code, string Name, string Host, string Visibility, IReadOnlyList<string> Intensity,
     bool PasswordProtected, int Players, int Capacity, bool Started, long ExpiresAt, bool DeckReady = false,
     string? DeckHash = null, long? DeckBytes = null);
-public sealed record RelayPlayer(string Id, string Name, bool Host, bool Connected);
+public sealed record RelayPlayer(string Id, string Name, bool Host, bool Connected, bool Observer = false);
 public sealed record RelayCardDefinition(Guid Id, string Keyword);
 public sealed record RelayPendingVolunteer(Guid ResolutionId, string Drawer, long Deadline);
 public sealed record RelayGameState(bool Started, string CurrentPlayer, IReadOnlyList<string> TurnOrder, int Remaining,

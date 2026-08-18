@@ -54,6 +54,7 @@ public sealed class DirectGameService : IDisposable
     private int eligibleScoreVoterCount;
     private readonly List<string> tieBreakCandidates = [];
     private readonly HashSet<string> eligibleTieBreakVoters = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> observers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> tieBreakVotes = new(StringComparer.OrdinalIgnoreCase);
 
     public DirectGameService(Action<Exception, string>? logWarning = null) => this.logWarning = logWarning;
@@ -79,6 +80,8 @@ public sealed class DirectGameService : IDisposable
     public IReadOnlyList<string> TieBreakCandidates { get { lock (stateLock) return tieBreakCandidates.ToArray(); } }
     public IReadOnlyCollection<string> SubmittedTieBreakVoters { get { lock (stateLock) return tieBreakVotes.Keys.ToArray(); } }
     public bool AwaitingTieBreak { get { lock (stateLock) return tieBreakCandidates.Count > 0; } }
+    public IReadOnlyCollection<string> Observers { get { lock (stateLock) return observers.ToArray(); } }
+    public bool IsObserver(string name) { lock (stateLock) return observers.Contains(RemoveHostSuffix(name)); }
 
     public static async Task<string> DiscoverPublicAddressAsync(CancellationToken token = default)
     {
@@ -214,7 +217,7 @@ public sealed class DirectGameService : IDisposable
             }
             var best = scores.Count == 0 ? 0 : scores.Values.Max();
             var leaders = scores.Where(pair => pair.Value == best).Select(pair => pair.Key).ToArray();
-            var voters = ConnectedNamesLocked().Where(name => !leaders.Contains(name, StringComparer.OrdinalIgnoreCase)).ToArray();
+            var voters = ConnectedNamesLocked().Where(name => !observers.Contains(name) && !leaders.Contains(name, StringComparer.OrdinalIgnoreCase)).ToArray();
             if (scoringEnabled && leaders.Length > 1 && voters.Length > 0)
             {
                 tieBreakCandidates.Clear(); tieBreakCandidates.AddRange(leaders);
@@ -249,6 +252,7 @@ public sealed class DirectGameService : IDisposable
         {
             var names = new List<string> { playerName };
             names.AddRange(peers.Select(peer => peer.Name));
+            names.RemoveAll(name => observers.Contains(name));
             if (names.Count == 0) throw new InvalidOperationException("There are no players in the room.");
             for (var index = names.Count - 1; index > 0; index--)
             {
@@ -274,6 +278,19 @@ public sealed class DirectGameService : IDisposable
         if (!IsHost) throw new InvalidOperationException("Only the host can start a new game.");
         ResetSharedPile(deck);
         StartGame();
+    }
+
+    public void SetObserver(string name, bool observer)
+    {
+        name = RemoveHostSuffix(name);
+        if (!IsHost)
+        {
+            if (!name.Equals(playerName, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Only the host can change another player's observer status.");
+            if (hostPeer is null) throw new InvalidOperationException("The direct host connection is unavailable.");
+            _ = hostPeer.SendJsonAsync(PacketType.ObserverRequest, new ObserverRequest(observer), cancellation?.Token ?? CancellationToken.None);
+            return;
+        }
+        ApplyObserverChange(name, observer);
     }
 
     public void RemovePlayer(string name)
@@ -337,6 +354,7 @@ public sealed class DirectGameService : IDisposable
             currentTurnIndex = -1;
             scoringEnabled = false; scoringDrawer = string.Empty; scores.Clear(); roundVotes.Clear(); eligibleScoreVoters.Clear(); eligibleScoreVoterCount = 0;
             tieBreakCandidates.Clear(); eligibleTieBreakVoters.Clear(); tieBreakVotes.Clear();
+            observers.Clear();
         }
         if (sessionSecret is not null) CryptographicOperations.ZeroMemory(sessionSecret);
         sessionSecret = null;
@@ -442,6 +460,8 @@ public sealed class DirectGameService : IDisposable
                 var request = Deserialize<VolunteerRequest>(packet.Payload);
                 ResolveVolunteer(request.ResolutionId, peer.Name, false);
             }
+            else if (packet.Type == PacketType.ObserverRequest)
+                ApplyObserverChange(peer.Name, Deserialize<ObserverRequest>(packet.Payload).Observer);
         }
     }
 
@@ -505,8 +525,8 @@ public sealed class DirectGameService : IDisposable
                         events.Enqueue(new DirectGameEvent(DirectGameEventType.Reset, "The host shuffled and reset the shared deck.", Remaining: reset.Remaining));
                         break;
                     case PacketType.PlayerList:
-                        var list = Deserialize<PlayerListNotice>(packet.Payload).Names;
-                        lock (stateLock) playerNames = list;
+                        var playerList = Deserialize<PlayerListNotice>(packet.Payload);
+                        lock (stateLock) { playerNames = playerList.Names; observers.Clear(); observers.UnionWith(playerList.Observers ?? []); }
                         events.Enqueue(new DirectGameEvent(DirectGameEventType.PlayerListChanged, "Player list updated."));
                         break;
                     case PacketType.Error:
@@ -563,6 +583,7 @@ public sealed class DirectGameService : IDisposable
         lock (stateLock)
         {
             if (pendingVolunteer is not null) { SendDrawError(drawer, "Resolve the current BLIND VOLUNTEER card before drawing again."); return; }
+            if (observers.Contains(drawer)) { SendDrawError(drawer, "Observers cannot draw cards."); return; }
             if (scoringEnabled && scoringDrawer.Length > 0) { SendDrawError(drawer, "Wait for all eligible players to submit a score."); return; }
             if (!gameStarted) { events.Enqueue(new DirectGameEvent(DirectGameEventType.Error, "The host has not started the game yet.")); return; }
             var current = CurrentPlayerLocked();
@@ -653,6 +674,7 @@ public sealed class DirectGameService : IDisposable
         GameResultsNotice? result = null;
         lock (stateLock)
         {
+            observers.Remove(name);
             if (eligibleScoreVoters.Remove(name))
             {
                 eligibleScoreVoterCount = eligibleScoreVoters.Count;
@@ -728,7 +750,7 @@ public sealed class DirectGameService : IDisposable
             scoringDrawer = drawer;
             roundVotes.Clear();
             eligibleScoreVoters.Clear();
-            eligibleScoreVoters.UnionWith(ConnectedNamesLocked().Where(name => !name.Equals(drawer, StringComparison.OrdinalIgnoreCase)));
+            eligibleScoreVoters.UnionWith(ConnectedNamesLocked().Where(name => !observers.Contains(name) && !name.Equals(drawer, StringComparison.OrdinalIgnoreCase)));
             eligibleScoreVoterCount = eligibleScoreVoters.Count;
             if (eligibleScoreVoters.Count == 0) { scoringDrawer = string.Empty; AdvanceTurnLocked(); }
             notice = MakeScoreStateLocked();
@@ -754,7 +776,7 @@ public sealed class DirectGameService : IDisposable
         lock (stateLock)
         {
             pendingVolunteer = new PendingVolunteer(resolutionId, draw.CardId, draw.Drawer, draw.Remaining, deadline);
-            otherPeers = peers.Where(peer => !peer.Name.Equals(draw.Drawer, StringComparison.OrdinalIgnoreCase)).ToList();
+            otherPeers = peers.Where(peer => !observers.Contains(peer.Name) && !peer.Name.Equals(draw.Drawer, StringComparison.OrdinalIgnoreCase)).ToList();
         }
 
         if (draw.Drawer.Equals(playerName, StringComparison.OrdinalIgnoreCase))
@@ -767,7 +789,7 @@ public sealed class DirectGameService : IDisposable
 
         var prompt = new VolunteerPrompt(resolutionId, draw.Drawer, deadline);
         foreach (var peer in otherPeers) _ = peer.SendJsonAsync(PacketType.VolunteerPrompt, prompt, cancellation?.Token ?? CancellationToken.None);
-        if (!draw.Drawer.Equals(playerName, StringComparison.OrdinalIgnoreCase))
+        if (!draw.Drawer.Equals(playerName, StringComparison.OrdinalIgnoreCase) && !IsObserver(playerName))
             events.Enqueue(new DirectGameEvent(DirectGameEventType.VolunteerPrompt, $"{draw.Drawer} drew a BLIND VOLUNTEER card.",
                 ResolutionId: resolutionId, DeadlineUnixMilliseconds: deadline, Drawer: draw.Drawer));
         _ = ResolveVolunteerAfterTimeoutAsync(resolutionId, cancellation?.Token ?? CancellationToken.None);
@@ -786,7 +808,7 @@ public sealed class DirectGameService : IDisposable
         {
             if (pendingVolunteer is not { } pending || pending.ResolutionId != resolutionId) return;
             var eligible = peers.Select(peer => peer.Name).Append(playerName)
-                .Where(name => !name.Equals(pending.Drawer, StringComparison.OrdinalIgnoreCase)).ToList();
+                .Where(name => !observers.Contains(name) && !name.Equals(pending.Drawer, StringComparison.OrdinalIgnoreCase)).ToList();
             if (!automatic)
             {
                 if (volunteer is null || !eligible.Contains(volunteer, StringComparer.OrdinalIgnoreCase)) return;
@@ -817,7 +839,7 @@ public sealed class DirectGameService : IDisposable
     {
         List<string> eligible;
         lock (stateLock) eligible = peers.Select(peer => peer.Name).Append(playerName)
-            .Where(name => !name.Equals(drawer, StringComparison.OrdinalIgnoreCase)).ToList();
+            .Where(name => !observers.Contains(name) && !name.Equals(drawer, StringComparison.OrdinalIgnoreCase)).ToList();
         if (eligible.Count == 0)
         {
             events.Enqueue(new DirectGameEvent(DirectGameEventType.Error, "No other connected player was available for the RANDOM card."));
@@ -876,7 +898,7 @@ public sealed class DirectGameService : IDisposable
         for (var offset = 1; offset <= turnOrder.Count; offset++)
         {
             var candidate = (currentTurnIndex + offset) % turnOrder.Count;
-            if (connected.Contains(turnOrder[candidate])) { currentTurnIndex = candidate; return; }
+            if (connected.Contains(turnOrder[candidate]) && !observers.Contains(turnOrder[candidate])) { currentTurnIndex = candidate; return; }
         }
     }
 
@@ -908,7 +930,39 @@ public sealed class DirectGameService : IDisposable
     {
         IReadOnlyList<string> names;
         lock (stateLock) names = playerNames;
-        BroadcastJson(PacketType.PlayerList, new PlayerListNotice(names));
+        BroadcastJson(PacketType.PlayerList, new PlayerListNotice(names, Observers.ToArray()));
+    }
+
+    private void ApplyObserverChange(string name, bool observer)
+    {
+        GameStateNotice state;
+        ScoreStateNotice scoreState;
+        lock (stateLock)
+        {
+            name = RemoveHostSuffix(name);
+            var wasCurrent = CurrentPlayerLocked().Equals(name, StringComparison.OrdinalIgnoreCase);
+            if (observer) observers.Add(name); else observers.Remove(name);
+            eligibleScoreVoters.Remove(name);
+            eligibleTieBreakVoters.Remove(name);
+            if (observer && scoringDrawer.Equals(name, StringComparison.OrdinalIgnoreCase))
+            {
+                scoringDrawer = string.Empty;
+                roundVotes.Clear();
+                eligibleScoreVoters.Clear();
+                eligibleScoreVoterCount = 0;
+            }
+            if (gameStarted && !observer && !turnOrder.Contains(name, StringComparer.OrdinalIgnoreCase)) turnOrder.Add(name);
+            if (wasCurrent && observer) AdvanceTurnLocked();
+            if (scoringDrawer.Length > 0 && eligibleScoreVoters.All(voter => roundVotes.ContainsKey(voter)))
+            {
+                scores.TryAdd(scoringDrawer, 0); scores[scoringDrawer] += roundVotes.Values.Sum();
+                scoringDrawer = string.Empty; roundVotes.Clear(); eligibleScoreVoters.Clear(); eligibleScoreVoterCount = 0; AdvanceTurnLocked();
+            }
+            eligibleScoreVoterCount = eligibleScoreVoters.Count;
+            state = MakeGameStateLocked(); scoreState = MakeScoreStateLocked();
+        }
+        BroadcastPlayerList(); BroadcastJson(PacketType.GameState, state); BroadcastJson(PacketType.ScoreState, scoreState);
+        events.Enqueue(new DirectGameEvent(DirectGameEventType.Status, $"{name} is now {(observer ? "observing" : "playing")}."));
     }
 
     private void UpdatePlayerNamesLocked() => playerNames = [playerName + " (Host)", .. peers.Select(peer => peer.Name).OrderBy(name => name, StringComparer.OrdinalIgnoreCase)];
@@ -920,6 +974,7 @@ public sealed class DirectGameService : IDisposable
             throw new InvalidOperationException($"Player names must be 1-{MaxPlayerNameLength} visible characters.");
         return name;
     }
+    private static string RemoveHostSuffix(string name) => name.EndsWith(" (Host)", StringComparison.OrdinalIgnoreCase) ? name[..^7] : name;
 
     private static string EncodeInvite(Invite invite) => "LM1." + Base64Url(JsonSerializer.SerializeToUtf8Bytes(invite));
     private static Invite DecodeInvite(string text)
@@ -961,13 +1016,14 @@ public sealed class DirectGameService : IDisposable
     }
     private static T Deserialize<T>(byte[] payload) => JsonSerializer.Deserialize<T>(payload) ?? throw new InvalidDataException("A direct-game message was invalid.");
 
-    private enum PacketType : byte { Join = 1, Welcome, DeckBundle, DrawRequest, DrawResult, PlayerList, Reset, Error, GameState, VolunteerRequest, VolunteerPrompt, VolunteerResolved, RandomTarget, ScoreRequest, ScoreState, GameResults, TieBreakVote, TieBreakState }
+    private enum PacketType : byte { Join = 1, Welcome, DeckBundle, DrawRequest, DrawResult, PlayerList, Reset, Error, GameState, VolunteerRequest, VolunteerPrompt, VolunteerResolved, RandomTarget, ScoreRequest, ScoreState, GameResults, TieBreakVote, TieBreakState, ObserverRequest }
     private sealed record Invite(string Host, int Port, Guid SessionId, string Secret);
     private sealed record JoinRequest(string PlayerName);
     private sealed record Welcome(CardCategory Category, int Remaining, bool ScoringEnabled);
     private sealed record DrawRequest(string PlayerName);
     private sealed record DrawResult(Guid DrawId, Guid CardId, string Drawer, int Remaining);
-    private sealed record PlayerListNotice(IReadOnlyList<string> Names);
+    private sealed record PlayerListNotice(IReadOnlyList<string> Names, IReadOnlyList<string>? Observers = null);
+    private sealed record ObserverRequest(bool Observer);
     private sealed record ResetNotice(int Remaining);
     private sealed record ErrorNotice(string Message);
     private sealed record GameStateNotice(bool Started, IReadOnlyList<string> TurnOrder, int CurrentTurnIndex, string CurrentPlayer);

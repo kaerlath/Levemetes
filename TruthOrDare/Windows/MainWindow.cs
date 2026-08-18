@@ -398,11 +398,14 @@ public sealed class MainWindow : Window, IDisposable
             foreach (var player in directGame.Players)
             {
                 var displayName = RemoveHostSuffix(player);
+                var isObserver = directGame.IsObserver(displayName);
                 var isCurrent = directGame.GameStarted && displayName.Equals(directGame.CurrentPlayer, StringComparison.OrdinalIgnoreCase);
                 var isAwaitingScore = directGame.AwaitingScores &&
                     directGame.EligibleScoreVoters.Contains(displayName, StringComparer.OrdinalIgnoreCase) &&
                     !directGame.SubmittedVoters.Contains(displayName, StringComparer.OrdinalIgnoreCase);
-                var status = isCurrent
+                var status = isObserver
+                    ? " - Observer"
+                    : isCurrent
                     ? " - current turn"
                     : isAwaitingScore ? " - awaiting score" : string.Empty;
                 var playerColor = isCurrent
@@ -424,7 +427,7 @@ public sealed class MainWindow : Window, IDisposable
                 var isAwaitingScore = !string.IsNullOrWhiteSpace(relayState?.ScoringDrawer) &&
                     relayState.EligibleVoters.Contains(player.Name, StringComparer.OrdinalIgnoreCase) &&
                     !relayState.SubmittedVoters.Contains(player.Name, StringComparer.OrdinalIgnoreCase);
-                var suffix = isCurrent ? " - current turn" : isAwaitingScore ? " - awaiting score" : player.Connected ? string.Empty : " - disconnected";
+                var suffix = player.Observer ? " - Observer" : isCurrent ? " - current turn" : isAwaitingScore ? " - awaiting score" : player.Connected ? string.Empty : " - disconnected";
                 var color = isCurrent ? new Vector4(.95f, .78f, .30f, 1f) : isAwaitingScore
                     ? new Vector4(1f, .60f, .25f, 1f) : player.Connected ? Vector4.One : new Vector4(.6f, .6f, .6f, 1f);
                 ImGui.Bullet(); ImGui.SameLine();
@@ -1044,7 +1047,17 @@ public sealed class MainWindow : Window, IDisposable
             {
                 ImGui.Bullet(); ImGui.SameLine();
                 ImGui.TextColored(player.Connected ? Vector4.One : new Vector4(.6f, .6f, .6f, 1f),
-                    player.Name + (player.Host ? " (Host)" : string.Empty) + (player.Connected ? string.Empty : " (reconnecting)"));
+                    player.Name + (player.Host ? " (Host)" : string.Empty) + (player.Observer ? " (Observer)" : string.Empty) + (player.Connected ? string.Empty : " (reconnecting)"));
+                var localRelayPlayer = player.Name.Equals(characterLabel, StringComparison.OrdinalIgnoreCase);
+                if (localRelayPlayer || relayGame.IsHost)
+                {
+                    ImGui.SameLine();
+                    var observer = player.Observer;
+                    if (ImGui.Checkbox($"Observer##RelayObserver{player.Id}", ref observer))
+                        relayTask = localRelayPlayer
+                            ? relayGame.SetObserverAsync(observer)
+                            : relayGame.SetPlayerObserverAsync(player.Name, observer);
+                }
                 if (relayGame.IsHost && !player.Host)
                 {
                     ImGui.SameLine();
@@ -1336,12 +1349,22 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         FormSectionHeading($"PLAYERS ({directGame.Players.Count}/8)");
-        foreach (var name in directGame.Players)
-        {
-            ImGui.Bullet();
-            ImGui.SameLine();
-            ImGui.TextUnformatted(name);
-        }
+            foreach (var name in directGame.Players)
+            {
+                ImGui.Bullet();
+                ImGui.SameLine();
+                var directName = RemoveHostSuffix(name);
+                var isObserver = directGame.IsObserver(directName);
+                ImGui.TextUnformatted(name + (isObserver ? " (Observer)" : string.Empty));
+                var isLocal = directName.Equals(GetLocalCharacterLabel(), StringComparison.OrdinalIgnoreCase);
+                if (isLocal || directGame.IsHost)
+                {
+                    ImGui.SameLine();
+                    var observer = isObserver;
+                    if (ImGui.Checkbox($"Observer##DirectObserver{directName}", ref observer))
+                        TryAction(() => directGame.SetObserver(directName, observer));
+                }
+            }
         if (!directGame.GameStarted && directGame.IsHost)
         {
             ImGui.Spacing();
@@ -1361,7 +1384,7 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.Bullet();
                 ImGui.SameLine();
                 ImGui.TextColored(connected ? Vector4.One : new Vector4(.6f, .6f, .6f, 1f),
-                    name + (connected ? string.Empty : " (disconnected)"));
+                    name + (directGame.IsObserver(name) ? " (Observer)" : connected ? string.Empty : " (disconnected)"));
                 if (directGame.IsHost && !name.Equals(GetLocalCharacterLabel(), StringComparison.OrdinalIgnoreCase))
                 {
                     ImGui.SameLine();

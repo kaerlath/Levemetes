@@ -73,6 +73,7 @@ interface Seat {
   reconnectToken: string;
   host: boolean;
   connected: boolean;
+  observer?: boolean;
 }
 
 interface SocketAttachment { seatId: string; }
@@ -284,6 +285,13 @@ export class RelayRoom extends DurableObject<Env> {
     if (type === "host:configure") return this.configureGame(seat, packet.payload);
     if (type === "host:start") return this.startGame(seat);
     if (type === "host:new-game") return this.startGame(seat, true);
+    if (type === "player:set-observer") return this.setObserver(seat, seat, packet.payload);
+    if (type === "host:set-observer") {
+      const name = cleanText((packet.payload as { name?: unknown } | null)?.name, 100);
+      const target = [...this.seats.values()].find(player => player.name === name);
+      if (target) return this.setObserver(seat, target, packet.payload);
+      return;
+    }
     if (type === "player:draw") return this.drawCard(seat);
     if (type === "player:score") return this.score(seat, packet.payload);
     if (type === "host:force-pass") return this.forcePass(seat);
@@ -351,7 +359,7 @@ export class RelayRoom extends DurableObject<Env> {
 
       const volunteerIds = new Set(pending.volunteerSeatIds ?? []);
       const volunteers = [...this.seats.values()].filter(seat =>
-        seat.connected && seat.name !== pending.drawer && volunteerIds.has(seat.id));
+        seat.connected && !seat.observer && seat.name !== pending.drawer && volunteerIds.has(seat.id));
       if (volunteers.length) {
         await this.resolveVolunteer(volunteers[crypto.getRandomValues(new Uint32Array(1))[0] % volunteers.length], false);
         return;
@@ -362,7 +370,7 @@ export class RelayRoom extends DurableObject<Env> {
         return;
       }
 
-      const candidates = [...this.seats.values()].filter(seat => seat.connected && seat.name !== pending.drawer);
+      const candidates = [...this.seats.values()].filter(seat => seat.connected && !seat.observer && seat.name !== pending.drawer);
       if (candidates.length) await this.resolveVolunteer(candidates[crypto.getRandomValues(new Uint32Array(1))[0] % candidates.length], true);
       else {
         this.state!.game!.pendingVolunteer = undefined;
@@ -406,7 +414,7 @@ export class RelayRoom extends DurableObject<Env> {
   private async startGame(seat: Seat, resetGame = false): Promise<void> {
     const game = this.state!.game;
     if (!seat.host || !game || !this.state!.deckKey) return this.sendError(seat, "Upload and configure the room deck before starting.");
-    const connected = [...this.seats.values()].filter(player => player.connected).map(player => player.name);
+    const connected = [...this.seats.values()].filter(player => player.connected && !player.observer).map(player => player.name);
     if (!connected.length) return this.sendError(seat, "There are no connected players.");
     if (resetGame) {
       game.drawPile = this.shuffle([...game.configuredCards]);
@@ -428,6 +436,7 @@ export class RelayRoom extends DurableObject<Env> {
 
   private async drawCard(seat: Seat): Promise<void> {
     const game = this.state!.game;
+    if (seat.observer) return this.sendError(seat, "Observers cannot draw cards.");
     if (!game?.started) return this.sendError(seat, "The host has not started the game.");
     if (game.pendingVolunteer) return this.sendError(seat, "Resolve the BLIND VOLUNTEER card first.");
     if (game.scoringDrawer) return this.sendError(seat, "Wait for all eligible players to score the current turn.");
@@ -442,14 +451,15 @@ export class RelayRoom extends DurableObject<Env> {
         selectionDeadline: createdAt + 5000, deadline: createdAt + 30000, volunteerSeatIds: [] };
       game.pendingVolunteer = pending;
       this.sendToSeat(seat, { type: "card-drawn", cardId, drawer: seat.name, remaining: game.drawPile.length });
-      this.broadcastExcept(seat.id, { type: "volunteer-prompt", resolutionId: pending.resolutionId, drawer: seat.name,
-        deadline: pending.deadline, remaining: game.drawPile.length });
+      for (const player of this.seats.values()) if (player.id !== seat.id && player.connected && !player.observer)
+        this.sendToSeat(player, { type: "volunteer-prompt", resolutionId: pending.resolutionId, drawer: seat.name,
+          deadline: pending.deadline, remaining: game.drawPile.length });
       await this.ctx.storage.setAlarm(pending.selectionDeadline);
     } else {
       if (!game.scoringEnabled) this.advanceTurn();
       this.broadcast({ type: "card-drawn", cardId, drawer: seat.name, remaining: game.drawPile.length });
       if (keyword === "random") {
-        const candidates = [...this.seats.values()].filter(player => player.connected && player.id !== seat.id);
+        const candidates = [...this.seats.values()].filter(player => player.connected && !player.observer && player.id !== seat.id);
         if (candidates.length) {
           game.randomTarget = candidates[crypto.getRandomValues(new Uint32Array(1))[0] % candidates.length].name;
           this.broadcast({ type: "random-target", drawer: seat.name, selectedPlayer: game.randomTarget });
@@ -463,6 +473,7 @@ export class RelayRoom extends DurableObject<Env> {
 
   private async score(seat: Seat, payload: unknown): Promise<void> {
     const game = this.state!.game;
+    if (seat.observer) return;
     const value = typeof payload === "number" ? payload : Number((payload as { value?: unknown } | null)?.value);
     if (!game?.scoringDrawer || !game.eligibleVoters.includes(seat.name) || seat.name in game.votes) return;
     if (!Number.isInteger(value) || value < 0 || value > 5) return this.sendError(seat, "Scores must be between 0 and 5.");
@@ -493,6 +504,7 @@ export class RelayRoom extends DurableObject<Env> {
 
   private async volunteer(seat: Seat, payload: unknown): Promise<void> {
     const game = this.state!.game;
+    if (seat.observer) return;
     const resolutionId = cleanText((payload as { resolutionId?: unknown } | null)?.resolutionId, 64);
     if (!game?.pendingVolunteer || game.pendingVolunteer.resolutionId !== resolutionId || game.pendingVolunteer.drawer === seat.name) return;
     const pending = game.pendingVolunteer;
@@ -507,7 +519,7 @@ export class RelayRoom extends DurableObject<Env> {
 
     const volunteerIds = new Set(pending.volunteerSeatIds ?? []);
     const earlyVolunteers = [...this.seats.values()].filter(player =>
-      player.connected && player.name !== pending.drawer && volunteerIds.has(player.id));
+      player.connected && !player.observer && player.name !== pending.drawer && volunteerIds.has(player.id));
     if (earlyVolunteers.length) {
       await this.resolveVolunteer(earlyVolunteers[crypto.getRandomValues(new Uint32Array(1))[0] % earlyVolunteers.length], false);
       return;
@@ -540,7 +552,7 @@ export class RelayRoom extends DurableObject<Env> {
     await this.persist();
     await this.ctx.storage.setAlarm(this.state!.expiresAt);
     await this.publish();
-    const eligible = [...this.seats.values()].filter(player => player.connected && !winners.includes(player.name)).map(player => player.name);
+    const eligible = [...this.seats.values()].filter(player => player.connected && !player.observer && !winners.includes(player.name)).map(player => player.name);
     if (winners.length > 1 && eligible.length > 0) {
       game.tieBreakCandidates = winners; game.eligibleTieVoters = eligible; game.tieVotes = {};
       await this.persist();
@@ -551,6 +563,7 @@ export class RelayRoom extends DurableObject<Env> {
 
   private async tieBreakVote(seat: Seat, payload: unknown): Promise<void> {
     const game = this.state!.game;
+    if (seat.observer) return;
     const candidate = cleanText((payload as { candidate?: unknown } | null)?.candidate, 100);
     if (!game || !game.eligibleTieVoters.includes(seat.name) || seat.name in game.tieVotes || !game.tieBreakCandidates.includes(candidate)) return;
     game.tieVotes[seat.name] = candidate;
@@ -601,7 +614,7 @@ export class RelayRoom extends DurableObject<Env> {
     const game = this.state!.game!;
     game.scoringDrawer = drawer;
     game.votes = {};
-    game.eligibleVoters = [...this.seats.values()].filter(seat => seat.connected && seat.name !== drawer).map(seat => seat.name);
+    game.eligibleVoters = [...this.seats.values()].filter(seat => seat.connected && !seat.observer && seat.name !== drawer).map(seat => seat.name);
     if (!game.eligibleVoters.length) { game.scoringDrawer = ""; this.advanceTurn(); }
   }
   private completeScoring() {
@@ -615,13 +628,45 @@ export class RelayRoom extends DurableObject<Env> {
     for (let offset = 1; offset <= game.turnOrder.length; offset++) {
       const candidateIndex = (Math.max(-1, game.turnIndex) + offset) % game.turnOrder.length;
       const candidate = [...this.seats.values()].find(seat => seat.name === game.turnOrder[candidateIndex]);
-      if (candidate?.connected) { game.turnIndex = candidateIndex; return; }
+      if (candidate?.connected && !candidate.observer) { game.turnIndex = candidateIndex; return; }
     }
     game.turnIndex = -1;
   }
   private currentPlayer() {
     const game = this.state?.game;
     return game && game.turnIndex >= 0 && game.turnOrder.length ? game.turnOrder[game.turnIndex % game.turnOrder.length] : "";
+  }
+  private async setObserver(actor: Seat, target: Seat, payload: unknown): Promise<void> {
+    if (actor.id !== target.id && !actor.host) return;
+    const observer = (payload as { observer?: unknown } | null)?.observer === true;
+    if (!!target.observer === observer) return;
+    target.observer = observer;
+    const game = this.state?.game;
+    if (game) {
+      const wasCurrent = this.currentPlayer() === target.name;
+      game.eligibleVoters = game.eligibleVoters.filter(name => name !== target.name);
+      game.eligibleTieVoters = game.eligibleTieVoters.filter(name => name !== target.name);
+      if (observer && game.scoringDrawer === target.name) {
+        game.scoringDrawer = "";
+        game.eligibleVoters = [];
+        game.votes = {};
+      }
+      if (observer) {
+        game.turnOrder = game.turnOrder.filter(name => name !== target.name);
+      } else if (game.started && !game.turnOrder.includes(target.name)) {
+        game.turnOrder.push(target.name);
+        game.scores[target.name] ??= 0;
+      }
+      if (wasCurrent && observer) {
+        game.turnIndex = Math.max(-1, game.turnIndex - 1);
+        this.advanceTurn();
+      } else if (game.turnIndex >= game.turnOrder.length) game.turnIndex = Math.max(0, game.turnOrder.length - 1);
+      if (game.scoringDrawer && game.eligibleVoters.every(name => name in game.votes)) this.completeScoring();
+    }
+    await this.persist();
+    this.broadcast({ type: "players", players: this.playerList() });
+    this.broadcast({ type: "status", message: `${target.name} is now ${observer ? "observing" : "playing"}.` });
+    this.broadcastGameState();
   }
   private gamePacket() {
     const game = this.state?.game;
@@ -659,9 +704,9 @@ export class RelayRoom extends DurableObject<Env> {
   }
 
   private newSeat(name: string, host: boolean): Seat {
-    return { id: crypto.randomUUID(), name, token: randomToken(), reconnectToken: randomToken(32), host, connected: false };
+    return { id: crypto.randomUUID(), name, token: randomToken(), reconnectToken: randomToken(32), host, connected: false, observer: false };
   }
-  private publicSeat(seat: Seat) { return { id: seat.id, name: seat.name, host: seat.host, connected: seat.connected }; }
+  private publicSeat(seat: Seat) { return { id: seat.id, name: seat.name, host: seat.host, connected: seat.connected, observer: !!seat.observer }; }
   private playerList() { return [...this.seats.values()].map(seat => this.publicSeat(seat)); }
   private publicState(): RoomSummary & { deckReady: boolean; deckHash?: string; deckBytes?: number } {
     const state = this.state!;
