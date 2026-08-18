@@ -1028,6 +1028,15 @@ public sealed class MainWindow : Window, IDisposable
             if (room is not null)
             {
                 ImGui.TextUnformatted($"{room.Name}  •  Code: {room.Code}");
+                if (room.Visibility.Equals("private", StringComparison.OrdinalIgnoreCase))
+                {
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton("Copy Code##RelayRoomCode"))
+                    {
+                        ImGui.SetClipboardText(room.Code);
+                        SetStatus("Private relay room code copied to the clipboard.");
+                    }
+                }
                 ImGui.TextDisabled($"Host: {room.Host}  •  {room.Players}/{room.Capacity} players  •  {string.Join(", ", room.Intensity)}");
             }
             FormSectionHeading($"PLAYERS ({relayGame.Players.Count}/16)");
@@ -1588,7 +1597,7 @@ public sealed class MainWindow : Window, IDisposable
     private void DrawVolunteerPrompt()
     {
         if (volunteerResolutionId is not null) ImGui.OpenPopup("Blind Volunteer Needed");
-        ImGui.SetNextWindowSize(new Vector2(430, 230) * ImGuiHelpers.GlobalScale, ImGuiCond.Appearing);
+        ImGui.SetNextWindowSize(new Vector2(430, 270) * ImGuiHelpers.GlobalScale, ImGuiCond.Appearing);
         if (!ImGui.BeginPopupModal("Blind Volunteer Needed", ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoSavedSettings)) return;
         if (volunteerResolutionId is not Guid resolutionId)
         {
@@ -1601,7 +1610,7 @@ public sealed class MainWindow : Window, IDisposable
         var remainingSeconds = (int)Math.Ceiling(remainingMilliseconds / 1000d);
         ImGui.TextWrapped($"{volunteerDrawer} drew a BLIND VOLUNTEER card. The card itself is hidden from everyone else.");
         ImGui.Spacing();
-        ImGui.TextWrapped("Volunteer before the countdown ends. If no one volunteers, the host will randomly choose another connected player.");
+        ImGui.TextWrapped("For the first five seconds, everyone who volunteers enters a random selection pool. After that, the first volunteer is chosen. If no one volunteers before time expires, a connected player is chosen at random.");
         ImGui.Spacing();
         ImGui.TextColored(new Vector4(.95f, .78f, .30f, 1f), $"Time remaining: {remainingSeconds} seconds");
         ImGui.Spacing();
@@ -1612,7 +1621,7 @@ public sealed class MainWindow : Window, IDisposable
             if (relayGame.IsConnected) relayTask = relayGame.VolunteerAsync(resolutionId);
             else directGame.Volunteer(resolutionId);
             volunteerResolutionId = null;
-            SetStatus("Volunteer request sent. The first request accepted by the host will be chosen.");
+            SetStatus("Volunteer request sent.");
             ImGui.CloseCurrentPopup();
         }
         ImGui.EndPopup();

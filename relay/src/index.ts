@@ -40,7 +40,9 @@ interface PendingVolunteer {
   resolutionId: string;
   cardId: string;
   drawer: string;
+  selectionDeadline: number;
   deadline: number;
+  volunteerSeatIds?: string[];
 }
 
 interface GameState {
@@ -340,7 +342,26 @@ export class RelayRoom extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     const pending = this.state?.game?.pendingVolunteer;
-    if (pending && pending.deadline <= Date.now()) {
+    if (pending) {
+      const now = Date.now();
+      if (now < pending.selectionDeadline) {
+        await this.ctx.storage.setAlarm(pending.selectionDeadline);
+        return;
+      }
+
+      const volunteerIds = new Set(pending.volunteerSeatIds ?? []);
+      const volunteers = [...this.seats.values()].filter(seat =>
+        seat.connected && seat.name !== pending.drawer && volunteerIds.has(seat.id));
+      if (volunteers.length) {
+        await this.resolveVolunteer(volunteers[crypto.getRandomValues(new Uint32Array(1))[0] % volunteers.length], false);
+        return;
+      }
+
+      if (now < pending.deadline) {
+        await this.ctx.storage.setAlarm(pending.deadline);
+        return;
+      }
+
       const candidates = [...this.seats.values()].filter(seat => seat.connected && seat.name !== pending.drawer);
       if (candidates.length) await this.resolveVolunteer(candidates[crypto.getRandomValues(new Uint32Array(1))[0] % candidates.length], true);
       else {
@@ -348,8 +369,8 @@ export class RelayRoom extends DurableObject<Env> {
         this.advanceTurn();
         await this.persist();
         this.broadcastGameState();
+        await this.ctx.storage.setAlarm(this.state!.expiresAt);
       }
-      await this.ctx.storage.setAlarm(this.state!.expiresAt);
       return;
     }
     if (this.state?.deckKey) await this.env.DECKS.delete(this.state.deckKey);
@@ -416,12 +437,14 @@ export class RelayRoom extends DurableObject<Env> {
     game.currentCardId = cardId; game.currentDrawer = seat.name; game.randomTarget = undefined;
     const keyword = game.keywords[cardId]?.toLowerCase() ?? "";
     if (keyword === "blindvolunteer" || keyword === "blind volunteer") {
-      const pending = { resolutionId: crypto.randomUUID(), cardId, drawer: seat.name, deadline: Date.now() + 30000 };
+      const createdAt = Date.now();
+      const pending: PendingVolunteer = { resolutionId: crypto.randomUUID(), cardId, drawer: seat.name,
+        selectionDeadline: createdAt + 5000, deadline: createdAt + 30000, volunteerSeatIds: [] };
       game.pendingVolunteer = pending;
       this.sendToSeat(seat, { type: "card-drawn", cardId, drawer: seat.name, remaining: game.drawPile.length });
       this.broadcastExcept(seat.id, { type: "volunteer-prompt", resolutionId: pending.resolutionId, drawer: seat.name,
         deadline: pending.deadline, remaining: game.drawPile.length });
-      await this.ctx.storage.setAlarm(pending.deadline);
+      await this.ctx.storage.setAlarm(pending.selectionDeadline);
     } else {
       if (!game.scoringEnabled) this.advanceTurn();
       this.broadcast({ type: "card-drawn", cardId, drawer: seat.name, remaining: game.drawPile.length });
@@ -472,6 +495,24 @@ export class RelayRoom extends DurableObject<Env> {
     const game = this.state!.game;
     const resolutionId = cleanText((payload as { resolutionId?: unknown } | null)?.resolutionId, 64);
     if (!game?.pendingVolunteer || game.pendingVolunteer.resolutionId !== resolutionId || game.pendingVolunteer.drawer === seat.name) return;
+    const pending = game.pendingVolunteer;
+    const now = Date.now();
+    if (now <= pending.selectionDeadline) {
+      pending.volunteerSeatIds ??= [];
+      if (!pending.volunteerSeatIds.includes(seat.id)) pending.volunteerSeatIds.push(seat.id);
+      await this.persist();
+      this.sendToSeat(seat, { type: "status", message: "You entered the five-second blind volunteer selection pool." });
+      return;
+    }
+
+    const volunteerIds = new Set(pending.volunteerSeatIds ?? []);
+    const earlyVolunteers = [...this.seats.values()].filter(player =>
+      player.connected && player.name !== pending.drawer && volunteerIds.has(player.id));
+    if (earlyVolunteers.length) {
+      await this.resolveVolunteer(earlyVolunteers[crypto.getRandomValues(new Uint32Array(1))[0] % earlyVolunteers.length], false);
+      return;
+    }
+
     await this.resolveVolunteer(seat, false);
   }
 
