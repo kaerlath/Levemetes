@@ -18,7 +18,6 @@ jobs:
   release:
     runs-on: windows-latest
     env:
-      DALAMUD_HOME: ${{ runner.temp }}\dalamud
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
 
     steps:
@@ -34,9 +33,11 @@ jobs:
         shell: pwsh
         run: |
           $archive = Join-Path $env:RUNNER_TEMP "dalamud.zip"
+          $dalamudHome = Join-Path $env:RUNNER_TEMP "dalamud"
           Invoke-WebRequest "https://goatcorp.github.io/dalamud-distrib/latest.zip" -OutFile $archive
-          New-Item -ItemType Directory -Force -Path $env:DALAMUD_HOME | Out-Null
-          Expand-Archive -LiteralPath $archive -DestinationPath $env:DALAMUD_HOME -Force
+          New-Item -ItemType Directory -Force -Path $dalamudHome | Out-Null
+          Expand-Archive -LiteralPath $archive -DestinationPath $dalamudHome -Force
+          Add-Content -Path $env:GITHUB_ENV -Value "DALAMUD_HOME=$dalamudHome"
 
       - name: Resolve release version
         shell: pwsh
