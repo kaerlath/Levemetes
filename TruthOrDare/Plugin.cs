@@ -7,6 +7,7 @@ using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using TruthOrDare.Services;
 using TruthOrDare.Windows;
+using TruthOrDare.Content;
 
 namespace TruthOrDare;
 
@@ -22,6 +23,8 @@ public sealed class Plugin : IDalamudPlugin
 
     private readonly WindowSystem windowSystem = new("Levemetes");
     private readonly MainWindow mainWindow;
+    private readonly WhatsNewWindow whatsNewWindow;
+    private readonly HelpWindow helpWindow;
     private readonly DirectGameService directGame;
     private readonly RelayGameService relayGame;
 
@@ -35,8 +38,16 @@ public sealed class Plugin : IDalamudPlugin
         var cardBackPath = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "card-back.png");
         var templateDirectory = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "Assets", "Templates");
         var artworkDirectory = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "Assets", "Artwork");
-        mainWindow = new MainWindow(configuration, store, directGame, relayGame, SaveConfiguration, cardBackPath, templateDirectory, artworkDirectory);
+        whatsNewWindow = new WhatsNewWindow(configuration, SaveConfiguration);
+        helpWindow = new HelpWindow(configuration);
+        mainWindow = new MainWindow(configuration, store, directGame, relayGame, SaveConfiguration, cardBackPath, templateDirectory, artworkDirectory,
+            OpenWhatsNew, OpenHelp);
         windowSystem.AddWindow(mainWindow);
+        windowSystem.AddWindow(whatsNewWindow);
+        windowSystem.AddWindow(helpWindow);
+
+        if (configuration.LastSeenPatchNotesVersion != PatchNotesContent.Current.Version)
+            whatsNewWindow.IsOpen = true;
 
         CommandManager.AddHandler(Command, new CommandInfo(OnCommand) { HelpMessage = "Open Levemetes." });
         PluginInterface.UiBuilder.Draw += windowSystem.Draw;
@@ -59,4 +70,6 @@ public sealed class Plugin : IDalamudPlugin
     private static void SaveConfiguration(Configuration configuration) => PluginInterface.SavePluginConfig(configuration);
     private void OnCommand(string _, string arguments) => mainWindow.IsOpen = true;
     private void OpenMainUi() => mainWindow.IsOpen = true;
+    private void OpenWhatsNew() { whatsNewWindow.IsOpen = true; whatsNewWindow.BringToFront(); }
+    private void OpenHelp() { helpWindow.IsOpen = true; helpWindow.BringToFront(); }
 }

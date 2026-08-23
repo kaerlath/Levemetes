@@ -1,6 +1,6 @@
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>1.4.2.0</Version>
+    <Version>1.5.0.0</Version>
     <AssemblyName>Levemetes</AssemblyName>
     <RootNamespace>TruthOrDare</RootNamespace>
     <PackageProjectUrl>https://github.com/kaerlath/Levemetes</PackageProjectUrl>

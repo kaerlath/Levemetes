@@ -18,6 +18,8 @@ using Dalamud.Interface.GameFonts;
 using Dalamud.Interface.ManagedFontAtlas;
 using TruthOrDare.Models;
 using TruthOrDare.Services;
+using TruthOrDare.Content;
+using TruthOrDare.Windows.Components;
 
 namespace TruthOrDare.Windows;
 
@@ -42,6 +44,8 @@ public sealed class MainWindow : Window, IDisposable
     private readonly DirectGameService directGame;
     private readonly RelayGameService relayGame;
     private readonly Action<Configuration> saveConfiguration;
+    private readonly Action openWhatsNew;
+    private readonly Action openHelp;
     private readonly string cardBackPath;
     private readonly string templateDirectory;
     private readonly string artworkDirectory;
@@ -102,7 +106,7 @@ public sealed class MainWindow : Window, IDisposable
     private Task? relayTask;
 
     public MainWindow(Configuration configuration, DeckStore store, DirectGameService directGame, RelayGameService relayGame, Action<Configuration> saveConfiguration,
-        string cardBackPath, string templateDirectory, string artworkDirectory)
+        string cardBackPath, string templateDirectory, string artworkDirectory, Action openWhatsNew, Action openHelp)
         : base("Levemetes##LevemetesMain")
     {
         SizeConstraints = new WindowSizeConstraints
@@ -115,6 +119,8 @@ public sealed class MainWindow : Window, IDisposable
         this.directGame = directGame;
         this.relayGame = relayGame;
         this.saveConfiguration = saveConfiguration;
+        this.openWhatsNew = openWhatsNew;
+        this.openHelp = openHelp;
         this.cardBackPath = cardBackPath;
         this.templateDirectory = templateDirectory;
         this.artworkDirectory = artworkDirectory;
@@ -154,7 +160,7 @@ public sealed class MainWindow : Window, IDisposable
     {
         statusRenderedThisFrame = false;
         PushLevemetesTheme();
-        DrawWindowTitle();
+        DrawAnimatedHeader();
         ProcessDirectGameEvents();
         ProcessRelayGameEvents();
         DrawDeckSelector();
@@ -186,7 +192,7 @@ public sealed class MainWindow : Window, IDisposable
         fileDialogManager.Draw();
     }
 
-    private static void PushLevemetesTheme()
+    internal static void PushLevemetesTheme()
     {
         var scale = ImGuiHelpers.GlobalScale;
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(14, 12) * scale);
@@ -236,32 +242,36 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.PushStyleColor(ImGuiCol.ScrollbarGrabActive, ThemeGoldBright);
     }
 
-    private static void PopLevemetesTheme()
+    internal static void PopLevemetesTheme()
     {
         ImGui.PopStyleColor(33);
         ImGui.PopStyleVar(12);
     }
 
-    private static void DrawWindowTitle()
+    private void DrawAnimatedHeader()
     {
-        var text = "L E V E M E T E S";
         var version = typeof(Plugin).Assembly.GetName().Version;
         var versionText = version is null ? string.Empty : $"v{version.Major}.{version.Minor}.{version.Build}.{version.Revision}";
-        var titleY = ImGui.GetCursorPosY();
-        ImGui.SetWindowFontScale(1.35f);
-        var width = ImGui.CalcTextSize(text).X;
-        ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(), (ImGui.GetWindowWidth() - width) / 2));
-        ImGui.TextColored(ThemeGoldBright, text);
-        ImGui.SetWindowFontScale(1f);
-        var nextLineY = ImGui.GetCursorPosY();
-        if (versionText.Length > 0)
+        LevemetesHeader.Draw("Player-run leveplates for truth, daring, and delightful trouble", versionText,
+            LevemetesHeaderMode.Compact, configuration.ReduceMotion);
+        var unread = configuration.LastSeenPatchNotesVersion != PatchNotesContent.Current.Version;
+        var controlsWidth = 110 + 76 + 98 + ImGui.GetStyle().ItemSpacing.X * 2;
+        ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(), ImGui.GetWindowWidth() - controlsWidth - ImGui.GetStyle().WindowPadding.X));
+        if (ImGui.SmallButton(unread ? "What's New  ●" : "What's New")) openWhatsNew();
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Help")) openHelp();
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Appearance")) ImGui.OpenPopup("LevemetesAppearance");
+        if (ImGui.BeginPopup("LevemetesAppearance"))
         {
-            var versionWidth = ImGui.CalcTextSize(versionText).X;
-            ImGui.SetCursorPos(new Vector2(
-                MathF.Max(ImGui.GetCursorPosX(), ImGui.GetWindowWidth() - versionWidth - 18 * ImGuiHelpers.GlobalScale),
-                titleY + 4 * ImGuiHelpers.GlobalScale));
-            ImGui.TextDisabled(versionText);
-            ImGui.SetCursorPosY(nextLineY);
+            var reduceMotion = configuration.ReduceMotion;
+            if (ImGui.Checkbox("Reduce motion", ref reduceMotion))
+            {
+                configuration.ReduceMotion = reduceMotion;
+                saveConfiguration(configuration);
+            }
+            ImGui.TextDisabled("Holds decorative animation still.");
+            ImGui.EndPopup();
         }
         GoldSeparator();
     }
@@ -1680,9 +1690,8 @@ public sealed class MainWindow : Window, IDisposable
             MathF.Max(padding.X, windowSize.X - padding.X - size.X),
             MathF.Max(ImGui.GetCursorPosY(), windowSize.Y - padding.Y - size.Y)));
         if (ImGui.Button($"{FontAwesomeIcon.QuestionCircle.ToIconString()}##GameInstructions", size))
-            ImGui.OpenPopup("How to Play Levemetes");
+            openHelp();
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("How to play Levemetes");
-        DrawGameInstructionsPopup();
     }
 
     private void DrawGameInstructionsPopup()

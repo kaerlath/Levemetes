@@ -3,9 +3,9 @@
     "Author": "Lynnaes Krazikaz",
     "Name": "Levemetes",
     "InternalName": "Levemetes",
-    "AssemblyVersion": "1.4.2.0",
-    "TestingAssemblyVersion": "1.4.2.0",
-    "TestingChangelog": "Levemetes 1.4.2 adds OBSERVER selections.",
+    "AssemblyVersion": "1.5.0.0",
+    "TestingAssemblyVersion": "1.5.0.0",
+    "TestingChangelog": "Levemetes 1.5.0 adds the animated card-themed header, What's New, structured Help, and Reduce Motion support.",
     "TestingDalamudApiLevel": 15,
     "Description": "Player-run levemetes card game for truth or dare shenanigans.  Categorized play with custom decks that can be created and shared between players!  Open with /levemetes",
     "ApplicableVersion": "any",
@@ -15,9 +15,9 @@
     "Punchline": "Draw locally stored challenge cards in game.",
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/kaerlath/Levemetes/releases/download/1.4.2/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/kaerlath/Levemetes/releases/download/1.4.2/latest.zip",
-    "DownloadLinkTesting": "https://github.com/kaerlath/Levemetes/releases/download/1.4.2/latest.zip",
-    "LastUpdate": "1787026033"
+    "DownloadLinkInstall": "https://github.com/kaerlath/Levemetes/releases/download/1.5.0/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/kaerlath/Levemetes/releases/download/1.5.0/latest.zip",
+    "DownloadLinkTesting": "https://github.com/kaerlath/Levemetes/releases/download/1.5.0/latest.zip",
+    "LastUpdate": "1787458224"
   }
 ]

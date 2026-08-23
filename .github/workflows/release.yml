@@ -1,0 +1,59 @@
+name: Publish release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing tag to publish
+        required: true
+        default: 1.5.0
+  push:
+    tags:
+      - "[0-9]*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      DALAMUD_HOME: ${{ runner.temp }}\dalamud
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Install .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Download Dalamud SDK files
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "dalamud.zip"
+          Invoke-WebRequest "https://goatcorp.github.io/dalamud-distrib/latest.zip" -OutFile $archive
+          New-Item -ItemType Directory -Force -Path $env:DALAMUD_HOME | Out-Null
+          Expand-Archive -LiteralPath $archive -DestinationPath $env:DALAMUD_HOME -Force
+
+      - name: Resolve release version
+        shell: pwsh
+        run: "Add-Content -Path $env:GITHUB_ENV -Value 'RELEASE_VERSION=${{ env.RELEASE_TAG }}'"
+
+      - name: Restore dependencies
+        run: dotnet restore TruthOrDare/TruthOrDare.csproj
+
+      - name: Build packaged plugin
+        run: dotnet build TruthOrDare/TruthOrDare.csproj --configuration Release --no-restore --property:Version=${{ env.RELEASE_VERSION }}
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:RELEASE_TAG `
+            "TruthOrDare/bin/Release/Levemetes/latest.zip#latest.zip" `
+            --title "Levemetes $env:RELEASE_TAG" `
+            --generate-notes

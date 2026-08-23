@@ -16,4 +16,6 @@ public sealed class Configuration : IPluginConfiguration
     public string RelayEndpoint { get; set; } = Services.RelayGameService.DefaultEndpoint;
     public string RelayReconnectRoomCode { get; set; } = string.Empty;
     public string RelayReconnectToken { get; set; } = string.Empty;
+    public bool ReduceMotion { get; set; }
+    public string LastSeenPatchNotesVersion { get; set; } = string.Empty;
 }
